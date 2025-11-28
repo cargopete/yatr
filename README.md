@@ -1,4 +1,4 @@
-# Steppe 🌿
+# Steppe 🏞️
 
 A modern, fast task runner for Rust projects.
 
