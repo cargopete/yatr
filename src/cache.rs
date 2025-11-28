@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::config::TaskConfig;
-use crate::error::{Result, SteppeError};
+use crate::error::{Result, YatrError};
 
 /// Cache entry metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,9 +46,9 @@ impl Cache {
     /// Create a new cache instance
     pub fn new(dir: Option<PathBuf>) -> Result<Self> {
         let dir = dir.unwrap_or_else(|| {
-            directories::ProjectDirs::from("", "", "steppe")
+            directories::ProjectDirs::from("", "", "yatr")
                 .map(|d| d.cache_dir().to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(".steppe/cache"))
+                .unwrap_or_else(|| PathBuf::from(".yatr/cache"))
         });
 
         std::fs::create_dir_all(&dir)?;
@@ -90,7 +90,7 @@ impl Cache {
 
         let meta_content = tokio::fs::read_to_string(&meta_path).await?;
         let entry: CacheEntry = serde_json::from_str(&meta_content).map_err(|_| {
-            SteppeError::Cache {
+            YatrError::Cache {
                 message: "Invalid cache metadata".to_string(),
             }
         })?;
@@ -128,7 +128,7 @@ impl Cache {
         };
 
         let meta_content = serde_json::to_string_pretty(&entry).map_err(|e| {
-            SteppeError::Cache {
+            YatrError::Cache {
                 message: format!("Failed to serialize cache metadata: {}", e),
             }
         })?;
@@ -234,12 +234,12 @@ impl Cache {
     async fn hash_sources(&self, patterns: &[String]) -> Result<String> {
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
-            let glob = Glob::new(pattern).map_err(|e| SteppeError::Cache {
+            let glob = Glob::new(pattern).map_err(|e| YatrError::Cache {
                 message: format!("Invalid glob pattern '{}': {}", pattern, e),
             })?;
             builder.add(glob);
         }
-        let globset = builder.build().map_err(|e| SteppeError::Cache {
+        let globset = builder.build().map_err(|e| YatrError::Cache {
             message: format!("Failed to build glob set: {}", e),
         })?;
 

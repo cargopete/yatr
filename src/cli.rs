@@ -6,13 +6,13 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Steppe - A modern task runner for Rust projects
+/// YATR - Yet Another Task Runner for Rust projects
 #[derive(Parser, Debug)]
-#[command(name = "steppe")]
+#[command(name = "yatr")]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 pub struct Cli {
-    /// Path to Steppe.toml config file
+    /// Path to yatr.toml config file
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -35,7 +35,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Task to run (shorthand for `steppe run <task>`)
+    /// Task to run (shorthand for `yatr run <task>`)
     #[arg(trailing_var_arg = true)]
     pub task: Vec<String>,
 }
@@ -102,14 +102,14 @@ pub enum Commands {
         command: CacheCommands,
     },
 
-    /// Initialize a new Steppe.toml
+    /// Initialize a new yatr.toml
     Init {
         /// Overwrite existing config
         #[arg(short, long)]
         force: bool,
     },
 
-    /// Validate Steppe.toml configuration
+    /// Validate yatr.toml configuration
     Check,
 }
 

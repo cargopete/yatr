@@ -1,9 +1,9 @@
 [package]
-name = "steppe"
+name = "yatr"
 version = "0.1.0"
 edition = "2021"
 authors = ["Pete"]
-description = "A modern, fast task runner for Rust projects"
+description = "Yet Another Task Runner - a modern, fast task runner for Rust projects"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cargopete/steppe"
 keywords = ["task-runner", "build", "automation", "developer-tools"]
@@ -68,5 +68,5 @@ panic = "abort"
 strip = true
 
 [[bin]]
-name = "steppe"
+name = "yatr"
 path = "src/main.rs"

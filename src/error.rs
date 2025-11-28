@@ -1,4 +1,4 @@
-//! Error types for Steppe
+//! Error types for YATR
 //!
 //! Uses `miette` for pretty error reporting with source spans and help text.
 
@@ -6,20 +6,20 @@ use miette::Diagnostic;
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Main error type for Steppe operations
+/// Main error type for YATR operations
 #[derive(Error, Diagnostic, Debug)]
-pub enum SteppeError {
+pub enum YatrError {
     #[error("Configuration file not found")]
     #[diagnostic(
-        code(steppe::config::not_found),
-        help("Create a Steppe.toml in your project root, or specify one with --config")
+        code(yatr::config::not_found),
+        help("Create a yatr.toml in your project root, or specify one with --config")
     )]
     ConfigNotFound {
         searched: Vec<PathBuf>,
     },
 
     #[error("Failed to parse configuration")]
-    #[diagnostic(code(steppe::config::parse))]
+    #[diagnostic(code(yatr::config::parse))]
     ConfigParse {
         #[source]
         source: toml::de::Error,
@@ -28,8 +28,8 @@ pub enum SteppeError {
 
     #[error("Task '{name}' not found")]
     #[diagnostic(
-        code(steppe::task::not_found),
-        help("Run `steppe list` to see available tasks")
+        code(yatr::task::not_found),
+        help("Run `yatr list` to see available tasks")
     )]
     TaskNotFound {
         name: String,
@@ -38,7 +38,7 @@ pub enum SteppeError {
 
     #[error("Circular dependency detected: {cycle}")]
     #[diagnostic(
-        code(steppe::task::cycle),
+        code(yatr::task::cycle),
         help("Check the 'depends' field in your task definitions")
     )]
     CyclicDependency {
@@ -46,7 +46,7 @@ pub enum SteppeError {
     },
 
     #[error("Task '{task}' failed with exit code {code}")]
-    #[diagnostic(code(steppe::exec::failed))]
+    #[diagnostic(code(yatr::exec::failed))]
     TaskFailed {
         task: String,
         code: i32,
@@ -56,7 +56,7 @@ pub enum SteppeError {
 
     #[error("Command not found: {command}")]
     #[diagnostic(
-        code(steppe::exec::command_not_found),
+        code(yatr::exec::command_not_found),
         help("Ensure the command is installed and in your PATH")
     )]
     CommandNotFound {
@@ -64,7 +64,7 @@ pub enum SteppeError {
     },
 
     #[error("Script execution failed in task '{task}'")]
-    #[diagnostic(code(steppe::script::failed))]
+    #[diagnostic(code(yatr::script::failed))]
     ScriptFailed {
         task: String,
         #[source]
@@ -72,29 +72,29 @@ pub enum SteppeError {
     },
 
     #[error("Invalid task configuration")]
-    #[diagnostic(code(steppe::config::invalid_task))]
+    #[diagnostic(code(yatr::config::invalid_task))]
     InvalidTask {
         task: String,
         reason: String,
     },
 
     #[error("I/O error")]
-    #[diagnostic(code(steppe::io))]
+    #[diagnostic(code(yatr::io))]
     Io(#[from] std::io::Error),
 
     #[error("Cache error: {message}")]
-    #[diagnostic(code(steppe::cache))]
+    #[diagnostic(code(yatr::cache))]
     Cache {
         message: String,
     },
 
     #[error("Watch error")]
-    #[diagnostic(code(steppe::watch))]
+    #[diagnostic(code(yatr::watch))]
     Watch {
         #[source]
         source: notify::Error,
     },
 }
 
-/// Result type alias for Steppe operations
-pub type Result<T> = std::result::Result<T, SteppeError>;
+/// Result type alias for YATR operations
+pub type Result<T> = std::result::Result<T, YatrError>;

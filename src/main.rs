@@ -1,4 +1,4 @@
-//! Steppe - A modern task runner for Rust projects
+//! YATR - A modern task runner for Rust projects
 //!
 //! Fast, ergonomic task automation with:
 //! - Simple TOML configuration
@@ -24,7 +24,7 @@ mod watch;
 
 use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};
 use config::Config;
-use error::{Result, SteppeError};
+use error::{Result, YatrError};
 use executor::{Executor, ExecutorConfig};
 use graph::TaskGraph;
 
@@ -310,7 +310,7 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: GraphFormat) -> Re
         }
 
         GraphFormat::Dot => {
-            println!("digraph steppe {{");
+            println!("digraph yatr {{");
             println!("  rankdir=LR;");
             println!("  node [shape=box];");
 
@@ -358,17 +358,17 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: GraphFormat) -> Re
 }
 
 fn init_config(force: bool) -> Result<()> {
-    let path = std::path::Path::new("Steppe.toml");
+    let path = std::path::Path::new("YATR.toml");
 
     if path.exists() && !force {
-        return Err(SteppeError::Io(std::io::Error::new(
+        return Err(YatrError::Io(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
-            "Steppe.toml already exists (use --force to overwrite)",
+            "YATR.toml already exists (use --force to overwrite)",
         )));
     }
 
-    let template = r#"# Steppe.toml - Task runner configuration
-# See https://github.com/yourusername/steppe for documentation
+    let template = r#"# YATR.toml - Task runner configuration
+# See https://github.com/yourusername/yatr for documentation
 
 [env]
 # Global environment variables
@@ -407,7 +407,7 @@ run = ["cargo build --release"]
     println!(
         "{} Created {}",
         style("✓").green(),
-        style("Steppe.toml").bold()
+        style("YATR.toml").bold()
     );
 
     Ok(())

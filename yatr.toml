@@ -1,4 +1,4 @@
-# Steppe's own Steppe.toml - we eat our own dog food 🐕
+# YATR's own YATR.toml - we eat our own dog food 🐕
 
 [env]
 RUST_BACKTRACE = "1"
@@ -45,7 +45,7 @@ desc = "Build optimized release binary"
 depends = ["check"]
 run = ["cargo build --release"]
 sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
-outputs = ["target/release/steppe"]
+outputs = ["target/release/yatr"]
 
 # ─────────────────────────────────────────────────────────────
 # Documentation
@@ -157,6 +157,6 @@ no_cache = true
 run = ["cargo watch -x 'test' -x 'clippy'"]
 
 [tasks.install-local]
-desc = "Install steppe locally from source"
+desc = "Install yatr locally from source"
 depends = ["release"]
 run = ["cargo install --path ."]

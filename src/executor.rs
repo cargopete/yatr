@@ -17,7 +17,7 @@ use tokio::time::timeout;
 
 use crate::cache::Cache;
 use crate::config::{Config, TaskConfig};
-use crate::error::{Result, SteppeError};
+use crate::error::{Result, YatrError};
 use crate::graph::{ExecutionPlan, TaskGraph, TaskNode};
 use crate::script::ScriptEngine;
 
@@ -142,7 +142,7 @@ impl Executor {
 
             // Wait for all tasks in this group
             for handle in handles {
-                let result = handle.await.map_err(|e| SteppeError::Io(
+                let result = handle.await.map_err(|e| YatrError::Io(
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
                 ))??;
 
@@ -157,7 +157,7 @@ impl Executor {
                 all_results.push(result);
 
                 if !success && !allow_failure {
-                    return Err(SteppeError::TaskFailed {
+                    return Err(YatrError::TaskFailed {
                         task: task_name,
                         code: 1,
                         stderr: None,
@@ -259,7 +259,7 @@ impl Executor {
         let engine = ScriptEngine::new();
         engine
             .execute(script, env, cwd)
-            .map_err(|e| SteppeError::ScriptFailed {
+            .map_err(|e| YatrError::ScriptFailed {
                 task: task_name.to_string(),
                 source: e,
             })
@@ -307,7 +307,7 @@ impl Executor {
 
         let mut all_output = String::new();
         for handle in handles {
-            let output = handle.await.map_err(|e| SteppeError::Io(
+            let output = handle.await.map_err(|e| YatrError::Io(
                 std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
             ))??;
             all_output.push_str(&output);
@@ -350,7 +350,7 @@ impl Executor {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SteppeError::TaskFailed {
+            return Err(YatrError::TaskFailed {
                 task: cmd.to_string(),
                 code: output.status.code().unwrap_or(1),
                 stderr: Some(stderr.to_string()),

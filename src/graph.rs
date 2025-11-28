@@ -8,7 +8,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 
 use crate::config::{Config, TaskConfig};
-use crate::error::{Result, SteppeError};
+use crate::error::{Result, YatrError};
 
 /// A node in the task graph
 #[derive(Debug, Clone)]
@@ -45,7 +45,7 @@ impl TaskGraph {
             let task_idx = name_to_index[name];
 
             for dep in &task_config.depends {
-                let dep_idx = name_to_index.get(dep).ok_or_else(|| SteppeError::TaskNotFound {
+                let dep_idx = name_to_index.get(dep).ok_or_else(|| YatrError::TaskNotFound {
                     name: dep.clone(),
                     available: config.task_names().iter().map(|s| s.to_string()).collect(),
                 })?;
@@ -58,7 +58,7 @@ impl TaskGraph {
         // Check for cycles
         if is_cyclic_directed(&graph) {
             let cycle = Self::find_cycle_description(&graph, &name_to_index);
-            return Err(SteppeError::CyclicDependency { cycle });
+            return Err(YatrError::CyclicDependency { cycle });
         }
 
         Ok(Self {
@@ -72,7 +72,7 @@ impl TaskGraph {
         let target_idx = self
             .name_to_index
             .get(task_name)
-            .ok_or_else(|| SteppeError::TaskNotFound {
+            .ok_or_else(|| YatrError::TaskNotFound {
                 name: task_name.to_string(),
                 available: self.name_to_index.keys().cloned().collect(),
             })?;
@@ -81,7 +81,7 @@ impl TaskGraph {
         let required_nodes = self.get_ancestors(*target_idx);
 
         // Topological sort of the subgraph
-        let sorted = toposort(&self.graph, None).map_err(|_| SteppeError::CyclicDependency {
+        let sorted = toposort(&self.graph, None).map_err(|_| YatrError::CyclicDependency {
             cycle: "Unknown cycle detected".to_string(),
         })?;
 
@@ -97,7 +97,7 @@ impl TaskGraph {
 
     /// Get all tasks in dependency order
     pub fn all_tasks_ordered(&self) -> Result<Vec<&TaskNode>> {
-        let sorted = toposort(&self.graph, None).map_err(|_| SteppeError::CyclicDependency {
+        let sorted = toposort(&self.graph, None).map_err(|_| YatrError::CyclicDependency {
             cycle: "Unknown cycle detected".to_string(),
         })?;
 
@@ -312,6 +312,6 @@ mod tests {
         let config: Config = toml::from_str(toml).unwrap();
         let result = TaskGraph::from_config(&config);
 
-        assert!(matches!(result, Err(SteppeError::CyclicDependency { .. })));
+        assert!(matches!(result, Err(YatrError::CyclicDependency { .. })));
     }
 }

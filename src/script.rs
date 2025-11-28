@@ -382,9 +382,9 @@ mod tests {
         let env = HashMap::new();
         let cwd = std::env::current_dir().unwrap();
 
-        let result = engine.execute(r#"print("Hello, Steppe!");"#, &env, &cwd);
+        let result = engine.execute(r#"print("Hello, YATR!");"#, &env, &cwd);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().trim(), "Hello, Steppe!");
+        assert_eq!(result.unwrap().trim(), "Hello, YATR!");
     }
 
     #[test]

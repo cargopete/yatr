@@ -1,4 +1,4 @@
-//! Steppe - A modern task runner for Rust projects
+//! YATR - A modern task runner for Rust projects
 //!
 //! This crate provides both a CLI tool and a library for task automation.
 //!
@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```toml
-//! # Steppe.toml
+//! # YATR.toml
 //!
 //! [tasks.test]
 //! desc = "Run all tests"
@@ -29,7 +29,7 @@
 //! # Library Usage
 //!
 //! ```rust,ignore
-//! use steppe::{Config, TaskGraph, Executor, ExecutorConfig};
+//! use yatr::{Config, TaskGraph, Executor, ExecutorConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +54,7 @@ pub mod watch;
 // Re-export main types
 pub use cache::Cache;
 pub use config::Config;
-pub use error::{Result, SteppeError};
+pub use error::{Result, YatrError};
 pub use executor::{Executor, ExecutorConfig, TaskResult};
 pub use graph::{ExecutionPlan, TaskGraph, TaskNode};
 pub use script::ScriptEngine;

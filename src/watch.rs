@@ -14,7 +14,7 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::error::{Result, SteppeError};
+use crate::error::{Result, YatrError};
 use crate::executor::{Executor, ExecutorConfig};
 use crate::graph::TaskGraph;
 
@@ -42,12 +42,12 @@ impl TaskWatcher {
         // Build glob set
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
-            let glob = Glob::new(pattern).map_err(|e| SteppeError::Watch {
+            let glob = Glob::new(pattern).map_err(|e| YatrError::Watch {
                 source: notify::Error::generic(&format!("Invalid glob '{}': {}", pattern, e)),
             })?;
             builder.add(glob);
         }
-        let patterns = builder.build().map_err(|e| SteppeError::Watch {
+        let patterns = builder.build().map_err(|e| YatrError::Watch {
             source: notify::Error::generic(&format!("Failed to build glob set: {}", e)),
         })?;
 
@@ -65,7 +65,7 @@ impl TaskWatcher {
                 }
             },
         )
-        .map_err(|e| SteppeError::Watch { source: e })?;
+        .map_err(|e| YatrError::Watch { source: e })?;
 
         Ok(Self {
             debouncer,
@@ -81,7 +81,7 @@ impl TaskWatcher {
             self.debouncer
                 .watcher()
                 .watch(path, RecursiveMode::Recursive)
-                .map_err(|e| SteppeError::Watch { source: e })?;
+                .map_err(|e| YatrError::Watch { source: e })?;
         }
         Ok(())
     }
@@ -118,7 +118,7 @@ pub async fn watch_and_run(
 ) -> Result<()> {
     use console::style;
 
-    let task = graph.get_task(task_name).ok_or_else(|| SteppeError::TaskNotFound {
+    let task = graph.get_task(task_name).ok_or_else(|| YatrError::TaskNotFound {
         name: task_name.to_string(),
         available: graph.task_names().map(|s| s.to_string()).collect(),
     })?;

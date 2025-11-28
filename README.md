@@ -1,16 +1,16 @@
-# Steppe 🏞️
+# YATR 🏞️
 
 A modern, fast task runner for Rust projects.
 
 ```
-steppe test        # Run tests
-steppe build       # Build with dependencies
-steppe --watch test  # Re-run on file changes
+yatr test        # Run tests
+yatr build       # Build with dependencies
+yatr --watch test  # Re-run on file changes
 ```
 
-## Why Steppe?
+## Why YATR?
 
-| Feature | Make | Just | cargo-make | **Steppe** |
+| Feature | Make | Just | cargo-make | **YATR** |
 |---------|------|------|------------|------------|
 | Simple config | ❌ | ✅ | ⚠️ | ✅ |
 | Parallel execution | ❌ | ✅ | ✅ | ✅ |
@@ -20,12 +20,12 @@ steppe --watch test  # Re-run on file changes
 | Watch mode | ❌ | ❌ | ❌ | ✅ |
 | Zero runtime deps | N/A | ✅ | ❌ | ✅ |
 
-Steppe sits in the sweet spot: **simpler than cargo-make**, **more powerful than just**.
+YATR sits in the sweet spot: **simpler than cargo-make**, **more powerful than just**.
 
 ## Installation
 
 ```bash
-cargo install steppe
+cargo install yatr
 ```
 
 Or build from source:
@@ -38,7 +38,7 @@ cargo install --path .
 
 ## Quick Start
 
-Create a `Steppe.toml` in your project root:
+Create a `yatr.toml` in your project root:
 
 ```toml
 [tasks.test]
@@ -54,10 +54,10 @@ run = ["cargo build --release"]
 Run tasks:
 
 ```bash
-steppe test          # Run tests
-steppe build         # Runs test first, then build
-steppe run test build  # Run multiple tasks
-steppe --dry-run build # Show execution plan
+yatr test          # Run tests
+yatr build         # Runs test first, then build
+yatr run test build  # Run multiple tasks
+yatr --dry-run build # Show execution plan
 ```
 
 ## Configuration
@@ -164,7 +164,7 @@ run = ["./deploy.sh"]
 Re-run tasks when files change:
 
 ```bash
-steppe watch test
+yatr watch test
 ```
 
 Configure watch patterns:
@@ -188,14 +188,14 @@ run = ["find src -name '*.rs' | wc -l"]
 Or per-invocation:
 
 ```bash
-steppe --shell run lines
+yatr --shell run lines
 ```
 
 ## CLI Reference
 
 ```
-steppe [OPTIONS] [TASK]...
-steppe <COMMAND>
+yatr [OPTIONS] [TASK]...
+yatr <COMMAND>
 
 Commands:
   run      Run one or more tasks
@@ -203,7 +203,7 @@ Commands:
   watch    Watch for changes and re-run
   graph    Show task dependency graph
   cache    Manage task cache
-  init     Create Steppe.toml template
+  init     Create YATR.toml template
   check    Validate configuration
 
 Options:
@@ -220,30 +220,30 @@ Options:
 
 ```bash
 # Run tasks
-steppe test                    # Run 'test' task
-steppe run test build          # Run multiple tasks
-steppe run --dry-run build     # Show plan without executing
-steppe run --force build       # Ignore cache
-steppe run --parallel 4 test   # Limit parallelism
+yatr test                    # Run 'test' task
+yatr run test build          # Run multiple tasks
+yatr run --dry-run build     # Show plan without executing
+yatr run --force build       # Ignore cache
+yatr run --parallel 4 test   # Limit parallelism
 
 # List tasks
-steppe list                    # Show all tasks
-steppe list --format json      # JSON output
-steppe list --deps             # Show dependencies
+yatr list                    # Show all tasks
+yatr list --format json      # JSON output
+yatr list --deps             # Show dependencies
 
 # Watch mode
-steppe watch test              # Re-run on changes
-steppe watch --clear test      # Clear screen between runs
+yatr watch test              # Re-run on changes
+yatr watch --clear test      # Clear screen between runs
 
 # Dependency graph
-steppe graph                   # Show full graph
-steppe graph build             # Graph for specific task
-steppe graph --format dot build | dot -Tpng > graph.png
+yatr graph                   # Show full graph
+yatr graph build             # Graph for specific task
+yatr graph --format dot build | dot -Tpng > graph.png
 
 # Cache management
-steppe cache stats             # Show cache statistics
-steppe cache clear             # Clear all cached results
-steppe cache path              # Show cache directory
+yatr cache stats             # Show cache statistics
+yatr cache clear             # Clear all cached results
+yatr cache path              # Show cache directory
 ```
 
 ## Full Configuration Reference
@@ -256,7 +256,7 @@ KEY = "value"
 # Global settings
 [settings]
 cache = true              # Enable caching (default: true)
-cache_dir = ".steppe"     # Cache directory
+cache_dir = ".yatr"     # Cache directory
 parallelism = 0           # Max parallel tasks (0 = CPU count)
 watch_debounce_ms = 300   # Watch debounce delay
 

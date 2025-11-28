@@ -1,4 +1,4 @@
-//! Configuration parsing for Steppe.toml
+//! Configuration parsing for yatr.toml
 //!
 //! Handles loading and validating the task runner configuration.
 
@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Result, SteppeError};
+use crate::error::{Result, YatrError};
 
 /// Default config file names to search for
-pub const CONFIG_FILES: &[&str] = &["Steppe.toml", "steppe.toml"];
+pub const CONFIG_FILES: &[&str] = &["yatr.toml", "Yatr.toml"];
 
 /// Root configuration structure
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,7 +28,7 @@ pub struct Config {
     pub settings: Settings,
 }
 
-/// Global settings for Steppe behavior
+/// Global settings for YATR behavior
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -40,7 +40,7 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub cache: bool,
 
-    /// Cache directory (defaults to .steppe/cache)
+    /// Cache directory (defaults to .yatr/cache)
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
 
@@ -130,7 +130,7 @@ impl Config {
                 if p.exists() {
                     p.to_path_buf()
                 } else {
-                    return Err(SteppeError::ConfigNotFound {
+                    return Err(YatrError::ConfigNotFound {
                         searched: vec![p.to_path_buf()],
                     });
                 }
@@ -139,7 +139,7 @@ impl Config {
         };
 
         let content = std::fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&content).map_err(|e| SteppeError::ConfigParse {
+        let config: Config = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
             source: e,
             path: config_path.clone(),
         })?;
@@ -168,7 +168,7 @@ impl Config {
             }
         }
 
-        Err(SteppeError::ConfigNotFound { searched })
+        Err(YatrError::ConfigNotFound { searched })
     }
 
     /// Validate the configuration
@@ -179,14 +179,14 @@ impl Config {
             let has_script = task.script.is_some();
 
             if !has_run && !has_script {
-                return Err(SteppeError::InvalidTask {
+                return Err(YatrError::InvalidTask {
                     task: name.clone(),
                     reason: "Task must have either 'run' commands or a 'script'".to_string(),
                 });
             }
 
             if has_run && has_script {
-                return Err(SteppeError::InvalidTask {
+                return Err(YatrError::InvalidTask {
                     task: name.clone(),
                     reason: "Task cannot have both 'run' and 'script'".to_string(),
                 });
@@ -194,7 +194,7 @@ impl Config {
 
             // Check for self-dependency
             if task.depends.contains(name) {
-                return Err(SteppeError::InvalidTask {
+                return Err(YatrError::InvalidTask {
                     task: name.clone(),
                     reason: "Task cannot depend on itself".to_string(),
                 });
