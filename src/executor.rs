@@ -211,7 +211,10 @@ impl Executor {
             task_exec_config.shell = true;
         }
 
-        let result = if let Some(script) = &task.config.script {
+        let result = if task.config.foreground {
+            // Execute in foreground with inherited stdio (for long-running processes)
+            Self::execute_foreground(&task.name, &task.config.run, &env, &cwd, &task_exec_config).await
+        } else if let Some(script) = &task.config.script {
             // Execute Rhai script
             Self::execute_script(&task.name, script, &env, &cwd).await
         } else if task.config.parallel {
@@ -288,6 +291,57 @@ impl Executor {
         }
 
         Ok(all_output)
+    }
+
+    /// Execute commands in foreground with inherited stdio
+    async fn execute_foreground(
+        _task_name: &str,
+        commands: &[String],
+        env: &HashMap<String, String>,
+        cwd: &Path,
+        exec_config: &ExecutorConfig,
+    ) -> Result<String> {
+        // Foreground tasks run with inherited stdio and block until completion
+        // Only the first command is executed (foreground doesn't make sense for multiple commands)
+        let cmd = commands.first().ok_or_else(|| YatrError::InvalidTask {
+            task: _task_name.to_string(),
+            reason: "Foreground task must have at least one command".to_string(),
+        })?;
+
+        let parts = Self::parse_command(cmd, exec_config.shell);
+
+        let mut command = if exec_config.shell {
+            let shell = if cfg!(windows) { "cmd" } else { "sh" };
+            let flag = if cfg!(windows) { "/C" } else { "-c" };
+            let mut c = Command::new(shell);
+            c.arg(flag).arg(cmd);
+            c
+        } else {
+            let mut c = Command::new(&parts[0]);
+            if parts.len() > 1 {
+                c.args(&parts[1..]);
+            }
+            c
+        };
+
+        command
+            .current_dir(cwd)
+            .envs(env)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let status = command.status().await?;
+
+        if !status.success() {
+            return Err(YatrError::TaskFailed {
+                task: cmd.to_string(),
+                code: status.code().unwrap_or(1),
+                stderr: None,
+            });
+        }
+
+        Ok(String::from("(foreground task completed)"))
     }
 
     /// Execute commands in parallel

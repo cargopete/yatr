@@ -97,6 +97,10 @@ pub struct TaskConfig {
     #[serde(default)]
     pub shell: Option<bool>,
 
+    /// Run in foreground with inherited stdio (for long-running processes like dev servers)
+    #[serde(default)]
+    pub foreground: bool,
+
     /// Files to watch for this task (glob patterns)
     #[serde(default)]
     pub watch: Vec<String>,
