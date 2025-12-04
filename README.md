@@ -246,6 +246,48 @@ yatr cache clear             # Clear all cached results
 yatr cache path              # Show cache directory
 ```
 
+## Showcases
+
+Real-world projects using yatr in production:
+
+### Boutique Bouquet - Full-Stack E-Commerce Platform
+
+**Stack**: Rust (Axum) backend + Next.js frontend + PostgreSQL + Docker
+
+[Boutique Bouquet](https://github.com/cargopete/boutique-bouquet) is an e-commerce platform that uses yatr to orchestrate its entire development workflow across multiple languages and services.
+
+**Key workflows enabled by yatr:**
+
+- **Unified development experience**: Single command (`yatr dev-local`) starts PostgreSQL in Docker, Rust backend, and Next.js frontend simultaneously
+- **Language-agnostic orchestration**: Manages Rust cargo commands, npm scripts, and Docker operations from one config
+- **Comprehensive CI pipeline**: `yatr ci` runs formatting, linting, type-checking, tests, and builds across both backend and frontend
+- **Flexible deployment targets**: Separate tasks for Docker-based and local development workflows
+
+**Example task configuration:**
+
+```toml
+[tasks.dev-local]
+desc = "Start DB in Docker, backend and frontend locally (parallel)"
+run = ["sh", "-c", "docker-compose up -d postgres && (cd backend && cargo run) & (cd frontend && npm run dev) & wait"]
+
+[tasks.ci]
+desc = "Run full CI pipeline (checks + tests + build)"
+depends = ["check", "test", "build"]
+
+[tasks.test]
+desc = "Run all tests (backend + frontend)"
+depends = ["backend-test", "frontend-test"]
+```
+
+**Results**:
+- Reduced onboarding time - new developers run `yatr dev-local` instead of memorizing 5+ commands
+- Consistent CI/CD - same task definitions work locally and in CI
+- 40+ tasks managing everything from database migrations to production builds
+
+---
+
+*Using yatr in your project? [Open a PR](https://github.com/cargopete/yatr) to add your showcase!*
+
 ## Full Configuration Reference
 
 ```toml
