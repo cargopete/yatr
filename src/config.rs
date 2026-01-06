@@ -54,11 +54,11 @@ pub struct Settings {
     pub watch_debounce_ms: u64,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_debounce() -> u64 {
+const fn default_debounce() -> u64 {
     300
 }
 
@@ -144,7 +144,7 @@ impl Config {
         };
 
         let content = std::fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
+        let config: Self = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
             source: e,
             path: config_path.clone(),
         })?;
@@ -211,16 +211,19 @@ impl Config {
     }
 
     /// Get a task by name
+    #[must_use] 
     pub fn get_task(&self, name: &str) -> Option<&TaskConfig> {
         self.tasks.get(name)
     }
 
     /// List all task names
+    #[must_use] 
     pub fn task_names(&self) -> Vec<&str> {
-        self.tasks.keys().map(|s| s.as_str()).collect()
+        self.tasks.keys().map(std::string::String::as_str).collect()
     }
 
     /// Merge environment variables for a task (global + task-specific)
+    #[must_use] 
     pub fn task_env(&self, task: &TaskConfig) -> HashMap<String, String> {
         let mut env = self.env.clone();
         env.extend(task.env.clone());

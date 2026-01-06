@@ -2,6 +2,7 @@
 //!
 //! Uses `notify` crate with debouncing to watch for file changes
 //! and trigger task re-runs.
+#![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -38,16 +39,16 @@ impl TaskWatcher {
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
             let glob = Glob::new(pattern).map_err(|e| YatrError::Watch {
-                source: notify::Error::generic(&format!("Invalid glob '{}': {}", pattern, e)),
+                source: notify::Error::generic(&format!("Invalid glob '{pattern}': {e}")),
             })?;
             builder.add(glob);
         }
         let patterns = builder.build().map_err(|e| YatrError::Watch {
-            source: notify::Error::generic(&format!("Failed to build glob set: {}", e)),
+            source: notify::Error::generic(&format!("Failed to build glob set: {e}")),
         })?;
 
         // Create debounced watcher
-        let tx_clone = tx.clone();
+        let tx_clone = tx;
         let debouncer = new_debouncer(
             Duration::from_millis(debounce_ms),
             move |events: std::result::Result<Vec<DebouncedEvent>, notify::Error>| {
@@ -96,6 +97,7 @@ impl TaskWatcher {
     }
 
     /// Get the task name being watched
+    #[must_use] 
     pub fn task_name(&self) -> &str {
         &self.task_name
     }
@@ -114,7 +116,7 @@ pub async fn watch_and_run(
         .get_task(task_name)
         .ok_or_else(|| YatrError::TaskNotFound {
             name: task_name.to_string(),
-            available: graph.task_names().map(|s| s.to_string()).collect(),
+            available: graph.task_names().map(std::string::ToString::to_string).collect(),
         })?;
 
     // Determine watch patterns

@@ -146,7 +146,7 @@ pub enum GraphFormat {
 
 impl Cli {
     /// Get the effective command, treating bare task names as `run <task>`
-    pub fn effective_command(&self) -> EffectiveCommand {
+    pub const fn effective_command(&self) -> EffectiveCommand {
         if let Some(cmd) = &self.command {
             EffectiveCommand::Subcommand(cmd)
         } else if !self.task.is_empty() {

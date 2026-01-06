@@ -71,6 +71,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor
+    #[must_use] 
     pub fn new(config: Config, exec_config: ExecutorConfig, cache: Option<Cache>) -> Self {
         Self {
             config: Arc::new(config),
@@ -113,14 +114,20 @@ impl Executor {
                 let mp = multi_progress.clone();
 
                 let handle = tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Err(YatrError::Io(std::io::Error::other(
+                                format!("Semaphore acquire failed: {e}"),
+                            )))
+                        }
+                    };
 
                     let pb = mp.add(ProgressBar::new_spinner());
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner:.cyan} {msg}")
-                            .unwrap(),
-                    );
+                    let style = ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                    pb.set_style(style);
                     pb.set_message(format!("Running {}", task_clone.name));
                     pb.enable_steady_tick(Duration::from_millis(100));
 
@@ -149,8 +156,7 @@ impl Executor {
                 let task_name = result.name.clone();
                 let allow_failure = graph
                     .get_task(&task_name)
-                    .map(|t| t.config.allow_failure)
-                    .unwrap_or(false);
+                    .is_some_and(|t| t.config.allow_failure);
 
                 Self::print_task_result(&result);
                 all_results.push(result);
@@ -216,7 +222,7 @@ impl Executor {
                 .await
         } else if let Some(script) = &task.config.script {
             // Execute Rhai script
-            Self::execute_script(&task.name, script, &env, &cwd).await
+            Self::execute_script(&task.name, script, &env, &cwd)
         } else if task.config.parallel {
             // Execute commands in parallel
             Self::execute_commands_parallel(
@@ -271,7 +277,7 @@ impl Executor {
     }
 
     /// Execute a Rhai script
-    async fn execute_script(
+    fn execute_script(
         task_name: &str,
         script: &str,
         env: &HashMap<String, String>,
@@ -307,7 +313,7 @@ impl Executor {
 
     /// Execute commands in foreground with inherited stdio
     async fn execute_foreground(
-        _task_name: &str,
+        task_name: &str,
         commands: &[String],
         env: &HashMap<String, String>,
         cwd: &Path,
@@ -316,7 +322,7 @@ impl Executor {
         // Foreground tasks run with inherited stdio and block until completion
         // Only the first command is executed (foreground doesn't make sense for multiple commands)
         let cmd = commands.first().ok_or_else(|| YatrError::InvalidTask {
-            task: _task_name.to_string(),
+            task: task_name.to_string(),
             reason: "Foreground task must have at least one command".to_string(),
         })?;
 
@@ -347,7 +353,7 @@ impl Executor {
 
         if !status.success() {
             return Err(YatrError::TaskFailed {
-                task: cmd.to_string(),
+                task: cmd.clone(),
                 code: status.code().unwrap_or(1),
                 stderr: None,
             });
@@ -473,6 +479,7 @@ impl Executor {
     }
 
     /// Print dry-run execution plan
+    #[allow(clippy::unused_self)]
     fn print_dry_run(&self, plan: &ExecutionPlan) {
         println!("{}", style("Execution plan (dry run):").bold().cyan());
         println!();
@@ -536,13 +543,14 @@ impl Executor {
             let trimmed = output.trim();
             if !trimmed.is_empty() {
                 for line in trimmed.lines() {
-                    println!("  {}", line);
+                    println!("  {line}");
                 }
             }
         }
     }
 
     /// Print execution summary
+    #[allow(clippy::unused_self)]
     fn print_summary(&self, results: &[TaskResult]) {
         println!();
 
@@ -575,7 +583,7 @@ impl Executor {
 mod num_cpus {
     pub fn get() -> usize {
         std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4)
     }
 }

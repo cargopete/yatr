@@ -3,6 +3,7 @@
 //! Provides a sandboxed scripting environment for complex task logic.
 //! Rhai was chosen for its fast startup time, Rust-native integration,
 //! and familiar syntax.
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,7 +19,8 @@ pub struct ScriptEngine {
 
 impl ScriptEngine {
     /// Create a new script engine with standard functions registered
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             _marker: std::marker::PhantomData,
         }
@@ -41,6 +43,7 @@ impl ScriptEngine {
     }
 
     /// Execute a script with the given environment and working directory
+    #[allow(clippy::unused_self)]
     pub fn execute(
         &self,
         script: &str,
@@ -79,12 +82,14 @@ impl ScriptEngine {
     }
 
     /// Compile a script for repeated execution
+    #[allow(clippy::unused_self)]
     pub fn compile(&self, script: &str) -> Result<AST, Box<EvalAltResult>> {
         let engine = Self::create_engine();
-        engine.compile(script).map_err(|e| e.into())
+        engine.compile(script).map_err(std::convert::Into::into)
     }
 
     /// Execute a pre-compiled script
+    #[allow(clippy::unused_self)]
     pub fn execute_ast(
         &self,
         ast: &AST,
@@ -117,13 +122,14 @@ impl ScriptEngine {
     }
 
     /// Register standard library functions
+    #[allow(clippy::too_many_lines)]
     fn register_stdlib(engine: &mut Engine) {
         // File operations
         engine.register_fn(
             "read_file",
             |path: &str| -> Result<String, Box<EvalAltResult>> {
                 std::fs::read_to_string(path)
-                    .map_err(|e| format!("Failed to read file '{}': {}", path, e).into())
+                    .map_err(|e| format!("Failed to read file '{path}': {e}").into())
             },
         );
 
@@ -131,7 +137,7 @@ impl ScriptEngine {
             "write_file",
             |path: &str, content: &str| -> Result<(), Box<EvalAltResult>> {
                 std::fs::write(path, content)
-                    .map_err(|e| format!("Failed to write file '{}': {}", path, e).into())
+                    .map_err(|e| format!("Failed to write file '{path}': {e}").into())
             },
         );
 
@@ -150,19 +156,19 @@ impl ScriptEngine {
         // Directory operations
         engine.register_fn("mkdir", |path: &str| -> Result<(), Box<EvalAltResult>> {
             std::fs::create_dir_all(path)
-                .map_err(|e| format!("Failed to create directory '{}': {}", path, e).into())
+                .map_err(|e| format!("Failed to create directory '{path}': {e}").into())
         });
 
         engine.register_fn("rmdir", |path: &str| -> Result<(), Box<EvalAltResult>> {
             std::fs::remove_dir_all(path)
-                .map_err(|e| format!("Failed to remove directory '{}': {}", path, e).into())
+                .map_err(|e| format!("Failed to remove directory '{path}': {e}").into())
         });
 
         engine.register_fn(
             "list_dir",
             |path: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
                 let entries: Result<Vec<_>, _> = std::fs::read_dir(path)
-                    .map_err(|e| format!("Failed to read directory '{}': {}", path, e))?
+                    .map_err(|e| format!("Failed to read directory '{path}': {e}"))?
                     .map(|e| e.map(|e| Dynamic::from(e.path().to_string_lossy().to_string())))
                     .collect();
 
@@ -211,9 +217,9 @@ impl ScriptEngine {
                 Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).to_string()),
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
-                    Err(format!("Command failed: {}", stderr).into())
+                    Err(format!("Command failed: {stderr}").into())
                 }
-                Err(e) => Err(format!("Failed to execute command: {}", e).into()),
+                Err(e) => Err(format!("Failed to execute command: {e}").into()),
             }
         });
 
@@ -231,8 +237,8 @@ impl ScriptEngine {
             "glob",
             |pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
                 let paths: Vec<_> = glob::glob(pattern)
-                    .map_err(|e| format!("Invalid glob pattern: {}", e))?
-                    .filter_map(|p| p.ok())
+                    .map_err(|e| format!("Invalid glob pattern: {e}"))?
+                    .filter_map(std::result::Result::ok)
                     .map(|p| Dynamic::from(p.to_string_lossy().to_string()))
                     .collect();
                 Ok(paths)
@@ -244,7 +250,7 @@ impl ScriptEngine {
             "parse_json",
             |s: &str| -> Result<Dynamic, Box<EvalAltResult>> {
                 let value: serde_json::Value =
-                    serde_json::from_str(s).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+                    serde_json::from_str(s).map_err(|e| format!("Failed to parse JSON: {e}"))?;
                 json_to_dynamic(value)
             },
         );
@@ -254,7 +260,7 @@ impl ScriptEngine {
             |value: Dynamic| -> Result<String, Box<EvalAltResult>> {
                 let json = dynamic_to_json(value)?;
                 serde_json::to_string_pretty(&json)
-                    .map_err(|e| format!("Failed to serialize JSON: {}", e).into())
+                    .map_err(|e| format!("Failed to serialize JSON: {e}").into())
             },
         );
 
@@ -263,7 +269,7 @@ impl ScriptEngine {
             "parse_toml",
             |s: &str| -> Result<Dynamic, Box<EvalAltResult>> {
                 let value: toml::Value =
-                    toml::from_str(s).map_err(|e| format!("Failed to parse TOML: {}", e))?;
+                    toml::from_str(s).map_err(|e| format!("Failed to parse TOML: {e}"))?;
                 toml_to_dynamic(value)
             },
         );
@@ -284,7 +290,7 @@ impl ScriptEngine {
                     "major" => format!("{}.0.0", major + 1),
                     "minor" => format!("{}.{}.0", major, minor + 1),
                     "patch" => format!("{}.{}.{}", major, minor, patch + 1),
-                    _ => return Err(format!("Unknown version part: {}", part).into()),
+                    _ => return Err(format!("Unknown version part: {part}").into()),
                 };
 
                 Ok(new_version)
@@ -299,7 +305,7 @@ impl Default for ScriptEngine {
     }
 }
 
-/// Convert serde_json::Value to Rhai Dynamic
+/// Convert `serde_json::Value` to Rhai Dynamic
 fn json_to_dynamic(value: serde_json::Value) -> Result<Dynamic, Box<EvalAltResult>> {
     use serde_json::Value;
 
@@ -307,13 +313,10 @@ fn json_to_dynamic(value: serde_json::Value) -> Result<Dynamic, Box<EvalAltResul
         Value::Null => Dynamic::UNIT,
         Value::Bool(b) => Dynamic::from(b),
         Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Dynamic::from(i)
-            } else if let Some(f) = n.as_f64() {
-                Dynamic::from(f)
-            } else {
-                Dynamic::UNIT
-            }
+            n.as_i64()
+                .map(Dynamic::from)
+                .or_else(|| n.as_f64().map(Dynamic::from))
+                .unwrap_or(Dynamic::UNIT)
         }
         Value::String(s) => Dynamic::from(s),
         Value::Array(arr) => {
@@ -330,7 +333,7 @@ fn json_to_dynamic(value: serde_json::Value) -> Result<Dynamic, Box<EvalAltResul
     })
 }
 
-/// Convert Rhai Dynamic to serde_json::Value
+/// Convert Rhai Dynamic to `serde_json::Value`
 fn dynamic_to_json(value: Dynamic) -> Result<serde_json::Value, Box<EvalAltResult>> {
     use serde_json::Value;
 
@@ -345,8 +348,7 @@ fn dynamic_to_json(value: Dynamic) -> Result<serde_json::Value, Box<EvalAltResul
     }
     if let Some(f) = value.clone().try_cast::<f64>() {
         return Ok(serde_json::Number::from_f64(f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null));
+            .map_or(Value::Null, Value::Number));
     }
     if let Some(s) = value.clone().try_cast::<String>() {
         return Ok(Value::String(s));
@@ -355,7 +357,7 @@ fn dynamic_to_json(value: Dynamic) -> Result<serde_json::Value, Box<EvalAltResul
         let vec: Result<Vec<_>, _> = arr.into_iter().map(dynamic_to_json).collect();
         return Ok(Value::Array(vec?));
     }
-    if let Some(map) = value.clone().try_cast::<rhai::Map>() {
+    if let Some(map) = value.try_cast::<rhai::Map>() {
         let obj: Result<serde_json::Map<String, Value>, _> = map
             .into_iter()
             .map(|(k, v)| dynamic_to_json(v).map(|v| (k.to_string(), v)))
@@ -366,7 +368,7 @@ fn dynamic_to_json(value: Dynamic) -> Result<serde_json::Value, Box<EvalAltResul
     Err("Cannot convert value to JSON".into())
 }
 
-/// Convert toml::Value to Rhai Dynamic
+/// Convert `toml::Value` to Rhai Dynamic
 fn toml_to_dynamic(value: toml::Value) -> Result<Dynamic, Box<EvalAltResult>> {
     use toml::Value;
 
