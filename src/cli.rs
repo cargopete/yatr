@@ -44,8 +44,8 @@ pub struct Cli {
 pub enum Commands {
     /// Run one or more tasks
     Run {
-        /// Tasks to run
-        #[arg(required = true)]
+        /// Tasks to run (lists available tasks if none specified)
+        #[arg(required = false)]
         tasks: Vec<String>,
 
         /// Show execution plan without running
