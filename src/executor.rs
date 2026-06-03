@@ -185,11 +185,18 @@ impl Executor {
         let start = Instant::now();
         let env = config.task_env(&task.config);
 
+        // Determine working directory (needed for cache key + output restore)
+        let cwd = task
+            .config
+            .cwd
+            .clone()
+            .unwrap_or_else(|| exec_config.cwd.clone());
+
         // Check cache
         if !exec_config.force {
             if let Some(cache) = cache {
                 if !task.config.no_cache {
-                    if let Some(cached) = cache.get(&task.name, &task.config).await? {
+                    if let Some(cached) = cache.get(&task.name, &task.config, &cwd).await? {
                         return Ok(TaskResult {
                             name: task.name.clone(),
                             success: true,
@@ -202,13 +209,6 @@ impl Executor {
                 }
             }
         }
-
-        // Determine working directory
-        let cwd = task
-            .config
-            .cwd
-            .clone()
-            .unwrap_or_else(|| exec_config.cwd.clone());
 
         // Use task-level shell setting if specified, otherwise use exec_config
         let mut task_exec_config = exec_config.clone();
@@ -249,10 +249,12 @@ impl Executor {
 
         match result {
             Ok(output) => {
-                // Store in cache
+                // Store in cache (skip foreground tasks: their output isn't captured)
                 if let Some(cache) = cache {
-                    if !task.config.no_cache {
-                        let _ = cache.put(&task.name, &task.config, &output).await;
+                    if !task.config.no_cache && !task.config.foreground {
+                        let _ = cache
+                            .put(&task.name, &task.config, &cwd, &output, duration)
+                            .await;
                     }
                 }
 

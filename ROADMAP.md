@@ -53,21 +53,25 @@ moon v1.30 (gRPC) → v1.32 (HTTP + Depot) precedent suggests.
 
 The piston the rest of the engine needs.
 
-- Include `outputs` declarations in the cache key.
-- On success, capture declared output files into a local content-addressed store (CAS).
-- On a cache hit, **restore** outputs from the CAS and validate they exist; fall through to a
-  real run if they don't.
-- Cache **exit status** (and stderr), not just stdout.
-- Fix `hash_sources`: respect `.gitignore`, scope the walk to declared `sources`, stop
-  following symlinks blindly.
-- Resolve the `duration_ms: 0` TODO and the "clear specific task cache" TODO (`main.rs`).
-- **IO-tracing-lite:** warn when a task reads a file outside `sources` or writes outside
-  `outputs`. Cache correctness before cache sharing — a fast cache that is occasionally wrong
-  is worse than no cache.
+- [x] Include `outputs` declarations in the cache key (also `cwd` and shell mode).
+- [x] On success, capture declared output files into a local content-addressed store (CAS).
+  The cache is now split into `ac/` (ActionResult JSON) + `cas/` (BLAKE3 blobs), mirroring
+  the Bazel REAPI shapes so v0.4's remote backend is a swap behind the same async API.
+- [x] On a cache hit, **restore** outputs from the CAS; if any blob is missing, fall through
+  to a real run rather than report a false hit.
+- [x] Record **exit status** and duration in the ActionResult (only successful runs are cached;
+  failures re-run, as they should). Foreground tasks are excluded from caching.
+- [x] Fix `hash_sources`: respect `.gitignore` (via the `ignore` crate), root the walk at the
+  task's `cwd`, and stop following symlinks.
+- [x] Resolve the `duration_ms: 0` TODO and implement `yatr cache clear <task>` (`main.rs`).
+- [ ] **IO-tracing-lite:** warn when a task reads a file outside `sources` or writes outside
+  `outputs`. Deferred — it needs platform-specific syscall tracing (strace/dtrace/ptrace) and is
+  large enough to stand alone. Tracked for a v0.2.x follow-up. Cache correctness before cache
+  sharing — a fast cache that is occasionally wrong is worse than no cache.
 
-_Acceptance:_ `yatr build && rm -rf <outputs> && yatr build` restores outputs from cache and
-the artifacts are present; changing a `sources` file busts the key; changing an unrelated file
-does not.
+_Acceptance (met):_ `yatr build && rm -rf <outputs> && yatr build` restores outputs from cache
+and the artifacts are present; changing a `sources` file busts the key; changing an unrelated
+file does not. Verified end-to-end against the binary.
 
 ### v0.3 — DX & observability (cheap, compounding, parallelisable)
 

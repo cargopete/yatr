@@ -204,9 +204,13 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
         }
 
         CacheCommands::Clear { task } => {
-            if task.is_some() {
-                // TODO: Clear specific task cache
-                println!("Clearing cache for specific tasks not yet implemented");
+            if let Some(task) = task {
+                let removed = cache.clear_task(task)?;
+                println!(
+                    "{} Cleared {removed} cache {} for task '{task}'",
+                    style("✓").green(),
+                    if removed == 1 { "entry" } else { "entries" },
+                );
             } else {
                 cache.clear().await?;
                 println!("{} Cache cleared", style("✓").green());
