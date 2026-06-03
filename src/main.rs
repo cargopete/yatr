@@ -7,6 +7,16 @@
 //! - File watching
 //! - Parallel execution
 
+#![allow(
+    unused_variables,
+    unused_imports,
+    dead_code,
+    unused_assignments,
+    mismatched_lifetime_syntaxes,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc
+)]
+
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -67,14 +77,12 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.effective_command() {
         EffectiveCommand::Subcommand(cmd) => run_command(cmd, &cli).await,
-        EffectiveCommand::RunTasks(tasks) => {
-            run_tasks(tasks, false, false, 0, false, &cli).await
-        }
+        EffectiveCommand::RunTasks(tasks) => run_tasks(tasks, false, false, 0, false, &cli).await,
         EffectiveCommand::None => {
             // No command - show help or list tasks
             let (config, _) = Config::load(cli.config.as_deref())?;
             let graph = TaskGraph::from_config(&config)?;
-            print_task_list(&graph, &config, ListFormat::Table, false);
+            print_task_list(&graph, &config, &ListFormat::Table, false);
             Ok(())
         }
     }
@@ -92,7 +100,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
                 let graph = TaskGraph::from_config(&config)?;
-                print_task_list(&graph, &config, ListFormat::Table, false);
+                print_task_list(&graph, &config, &ListFormat::Table, false);
                 Ok(())
             } else {
                 run_tasks(tasks, *dry_run, *force, *parallel, *shell, cli).await
@@ -102,7 +110,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
         Commands::List { format, deps } => {
             let (config, _) = Config::load(cli.config.as_deref())?;
             let graph = TaskGraph::from_config(&config)?;
-            print_task_list(&graph, &config, format.clone(), *deps);
+            print_task_list(&graph, &config, format, *deps);
             Ok(())
         }
 
@@ -122,7 +130,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
         Commands::Graph { task, format } => {
             let (config, _) = Config::load(cli.config.as_deref())?;
             let graph = TaskGraph::from_config(&config)?;
-            print_graph(&graph, task.as_deref(), format.clone())?;
+            print_graph(&graph, task.as_deref(), format)?;
             Ok(())
         }
 
@@ -181,21 +189,18 @@ async fn run_tasks(
 }
 
 async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
-    let cache_dir = cli
-        .config
-        .as_ref()
-        .and_then(|_| {
-            Config::load(cli.config.as_deref())
-                .ok()
-                .and_then(|(c, _)| c.settings.cache_dir)
-        });
+    let cache_dir = cli.config.as_ref().and_then(|_| {
+        Config::load(cli.config.as_deref())
+            .ok()
+            .and_then(|(c, _)| c.settings.cache_dir)
+    });
 
     let cache = cache::Cache::new(cache_dir)?;
 
     match cmd {
         CacheCommands::Stats => {
             let stats = cache.stats()?;
-            println!("Cache: {}", stats);
+            println!("Cache: {stats}");
         }
 
         CacheCommands::Clear { task } => {
@@ -217,24 +222,20 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn print_task_list(graph: &TaskGraph, config: &Config, format: ListFormat, show_deps: bool) {
+fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show_deps: bool) {
     match format {
         ListFormat::Table => {
             println!("{}", style("Available tasks:").bold());
             println!();
 
             let mut names: Vec<_> = graph.task_names().collect();
-            names.sort();
+            names.sort_unstable();
 
             let max_name_len = names.iter().map(|n| n.len()).max().unwrap_or(0);
 
             for name in names {
                 if let Some(task) = graph.get_task(name) {
-                    let desc = task
-                        .config
-                        .desc
-                        .as_deref()
-                        .unwrap_or("");
+                    let desc = task.config.desc.as_deref().unwrap_or("");
 
                     print!(
                         "  {}{}  {}",
@@ -280,15 +281,15 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: ListFormat, show_
 
         ListFormat::Plain => {
             let mut names: Vec<_> = graph.task_names().collect();
-            names.sort();
+            names.sort_unstable();
             for name in names {
-                println!("{}", name);
+                println!("{name}");
             }
         }
     }
 }
 
-fn print_graph(graph: &TaskGraph, task: Option<&str>, format: GraphFormat) -> Result<()> {
+fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> Result<()> {
     let tasks = if let Some(name) = task {
         graph.execution_order(name)?
     } else {

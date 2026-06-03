@@ -7,8 +7,7 @@
 //!
 //! Cache entries are stored locally with optional remote sync support planned.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use blake3::Hasher;
 use globset::{Glob, GlobSetBuilder};
@@ -46,9 +45,7 @@ impl Cache {
     /// Create a new cache instance
     pub fn new(dir: Option<PathBuf>) -> Result<Self> {
         let dir = dir.unwrap_or_else(|| {
-            directories::ProjectDirs::from("", "", "yatr")
-                .map(|d| d.cache_dir().to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(".yatr/cache"))
+            directories::ProjectDirs::from("", "", "yatr").map_or_else(|| PathBuf::from(".yatr/cache"), |d| d.cache_dir().to_path_buf())
         });
 
         std::fs::create_dir_all(&dir)?;
@@ -57,7 +54,8 @@ impl Cache {
     }
 
     /// Create a disabled cache (no-op)
-    pub fn disabled() -> Self {
+    #[must_use] 
+    pub const fn disabled() -> Self {
         Self {
             dir: PathBuf::new(),
             enabled: false,
@@ -65,7 +63,8 @@ impl Cache {
     }
 
     /// Check if cache is enabled
-    pub fn is_enabled(&self) -> bool {
+    #[must_use] 
+    pub const fn is_enabled(&self) -> bool {
         self.enabled
     }
 
@@ -89,11 +88,10 @@ impl Cache {
         }
 
         let meta_content = tokio::fs::read_to_string(&meta_path).await?;
-        let entry: CacheEntry = serde_json::from_str(&meta_content).map_err(|_| {
-            YatrError::Cache {
+        let entry: CacheEntry =
+            serde_json::from_str(&meta_content).map_err(|_| YatrError::Cache {
                 message: "Invalid cache metadata".to_string(),
-            }
-        })?;
+            })?;
 
         // Verify the entry is for this task
         if entry.task != task_name {
@@ -127,10 +125,8 @@ impl Cache {
             output_size: output.len(),
         };
 
-        let meta_content = serde_json::to_string_pretty(&entry).map_err(|e| {
-            YatrError::Cache {
-                message: format!("Failed to serialize cache metadata: {}", e),
-            }
+        let meta_content = serde_json::to_string_pretty(&entry).map_err(|e| YatrError::Cache {
+            message: format!("Failed to serialize cache metadata: {e}"),
         })?;
 
         tokio::fs::write(&meta_path, meta_content).await?;
@@ -184,7 +180,11 @@ impl Cache {
 
         for entry in std::fs::read_dir(&self.dir)? {
             let entry = entry?;
-            if entry.path().extension().map(|e| e == "cache").unwrap_or(false) {
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|e| e == "cache")
+            {
                 total_size += entry.metadata()?.len();
                 entry_count += 1;
             }
@@ -235,12 +235,12 @@ impl Cache {
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
             let glob = Glob::new(pattern).map_err(|e| YatrError::Cache {
-                message: format!("Invalid glob pattern '{}': {}", pattern, e),
+                message: format!("Invalid glob pattern '{pattern}': {e}"),
             })?;
             builder.add(glob);
         }
         let globset = builder.build().map_err(|e| YatrError::Cache {
-            message: format!("Failed to build glob set: {}", e),
+            message: format!("Failed to build glob set: {e}"),
         })?;
 
         let mut hasher = Hasher::new();
@@ -250,7 +250,7 @@ impl Cache {
         for entry in WalkDir::new(".")
             .follow_links(true)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
         {
             let path = entry.path();
             if path.is_file() && globset.is_match(path) {
@@ -274,12 +274,12 @@ impl Cache {
 
     /// Get path for cache file
     fn cache_path(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{}.cache", key))
+        self.dir.join(format!("{key}.cache"))
     }
 
     /// Get path for metadata file
     fn meta_path(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{}.meta.json", key))
+        self.dir.join(format!("{key}.meta.json"))
     }
 }
 
@@ -296,9 +296,13 @@ impl std::fmt::Display for CacheStats {
         let size_str = if self.total_size < 1024 {
             format!("{} B", self.total_size)
         } else if self.total_size < 1024 * 1024 {
-            format!("{:.1} KB", self.total_size as f64 / 1024.0)
+            let kb_int = self.total_size / 1024;
+            let kb_frac = (self.total_size % 1024) * 10 / 1024;
+            format!("{kb_int}.{kb_frac} KB")
         } else {
-            format!("{:.1} MB", self.total_size as f64 / (1024.0 * 1024.0))
+            let mb_int = self.total_size / (1024 * 1024);
+            let mb_frac = (self.total_size % (1024 * 1024)) * 10 / (1024 * 1024);
+            format!("{mb_int}.{mb_frac} MB")
         };
 
         write!(
@@ -329,6 +333,7 @@ mod tests {
             env: HashMap::new(),
             cwd: None,
             shell: None,
+            foreground: false,
             watch: vec![],
             sources: vec![],
             outputs: vec![],

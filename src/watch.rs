@@ -2,14 +2,14 @@
 //!
 //! Uses `notify` crate with debouncing to watch for file changes
 //! and trigger task re-runs.
+#![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use notify::{Event, RecursiveMode};
+use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use tokio::sync::mpsc;
 
@@ -32,35 +32,28 @@ pub struct TaskWatcher {
 
 impl TaskWatcher {
     /// Create a new watcher for a task
-    pub fn new(
-        task_name: &str,
-        patterns: &[String],
-        debounce_ms: u64,
-    ) -> Result<Self> {
+    pub fn new(task_name: &str, patterns: &[String], debounce_ms: u64) -> Result<Self> {
         let (tx, rx) = mpsc::channel(16);
 
         // Build glob set
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
             let glob = Glob::new(pattern).map_err(|e| YatrError::Watch {
-                source: notify::Error::generic(&format!("Invalid glob '{}': {}", pattern, e)),
+                source: notify::Error::generic(&format!("Invalid glob '{pattern}': {e}")),
             })?;
             builder.add(glob);
         }
         let patterns = builder.build().map_err(|e| YatrError::Watch {
-            source: notify::Error::generic(&format!("Failed to build glob set: {}", e)),
+            source: notify::Error::generic(&format!("Failed to build glob set: {e}")),
         })?;
 
         // Create debounced watcher
-        let tx_clone = tx.clone();
+        let tx_clone = tx;
         let debouncer = new_debouncer(
             Duration::from_millis(debounce_ms),
             move |events: std::result::Result<Vec<DebouncedEvent>, notify::Error>| {
                 if let Ok(events) = events {
-                    let paths: Vec<PathBuf> = events
-                        .into_iter()
-                        .map(|e| e.path)
-                        .collect();
+                    let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
                     let _ = tx_clone.blocking_send(paths);
                 }
             },
@@ -104,6 +97,7 @@ impl TaskWatcher {
     }
 
     /// Get the task name being watched
+    #[must_use] 
     pub fn task_name(&self) -> &str {
         &self.task_name
     }
@@ -118,10 +112,12 @@ pub async fn watch_and_run(
 ) -> Result<()> {
     use console::style;
 
-    let task = graph.get_task(task_name).ok_or_else(|| YatrError::TaskNotFound {
-        name: task_name.to_string(),
-        available: graph.task_names().map(|s| s.to_string()).collect(),
-    })?;
+    let task = graph
+        .get_task(task_name)
+        .ok_or_else(|| YatrError::TaskNotFound {
+            name: task_name.to_string(),
+            available: graph.task_names().map(std::string::ToString::to_string).collect(),
+        })?;
 
     // Determine watch patterns
     let patterns = if task.config.watch.is_empty() {
@@ -144,10 +140,7 @@ pub async fn watch_and_run(
         style("👀").cyan(),
         style(task_name).bold()
     );
-    println!(
-        "   Patterns: {}",
-        style(patterns.join(", ")).dim()
-    );
+    println!("   Patterns: {}", style(patterns.join(", ")).dim());
     println!();
 
     // Initial run
@@ -162,11 +155,7 @@ pub async fn watch_and_run(
     println!("{}", style("─".repeat(60)).dim());
 
     // Set up watcher
-    let mut watcher = TaskWatcher::new(
-        task_name,
-        &patterns,
-        config.settings.watch_debounce_ms,
-    )?;
+    let mut watcher = TaskWatcher::new(task_name, &patterns, config.settings.watch_debounce_ms)?;
 
     // Watch current directory
     watcher.watch(&[std::env::current_dir()?])?;
@@ -188,18 +177,11 @@ pub async fn watch_and_run(
             // Clear screen option could go here
             println!("{}", style("─".repeat(60)).dim());
 
-            let executor = Executor::new(
-                config.clone(),
-                exec_config.clone(),
-                None,
-            );
+            let executor = Executor::new(config.clone(), exec_config.clone(), None);
 
             let _ = executor.execute(graph, task_name).await;
             println!("{}", style("─".repeat(60)).dim());
-            println!(
-                "{} Waiting for changes...",
-                style("👀").cyan()
-            );
+            println!("{} Waiting for changes...", style("👀").cyan());
         }
     }
 }

@@ -13,10 +13,9 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
-use tokio::time::timeout;
 
 use crate::cache::Cache;
-use crate::config::{Config, TaskConfig};
+use crate::config::Config;
 use crate::error::{Result, YatrError};
 use crate::graph::{ExecutionPlan, TaskGraph, TaskNode};
 use crate::script::ScriptEngine;
@@ -72,6 +71,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor
+    #[must_use] 
     pub fn new(config: Config, exec_config: ExecutorConfig, cache: Option<Cache>) -> Self {
         Self {
             config: Arc::new(config),
@@ -114,14 +114,20 @@ impl Executor {
                 let mp = multi_progress.clone();
 
                 let handle = tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Err(YatrError::Io(std::io::Error::other(
+                                format!("Semaphore acquire failed: {e}"),
+                            )))
+                        }
+                    };
 
                     let pb = mp.add(ProgressBar::new_spinner());
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner:.cyan} {msg}")
-                            .unwrap(),
-                    );
+                    let style = ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                    pb.set_style(style);
                     pb.set_message(format!("Running {}", task_clone.name));
                     pb.enable_steady_tick(Duration::from_millis(100));
 
@@ -142,16 +148,15 @@ impl Executor {
 
             // Wait for all tasks in this group
             for handle in handles {
-                let result = handle.await.map_err(|e| YatrError::Io(
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                ))??;
+                let result = handle
+                    .await
+                    .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
 
                 let success = result.success;
                 let task_name = result.name.clone();
                 let allow_failure = graph
                     .get_task(&task_name)
-                    .map(|t| t.config.allow_failure)
-                    .unwrap_or(false);
+                    .is_some_and(|t| t.config.allow_failure);
 
                 Self::print_task_result(&result);
                 all_results.push(result);
@@ -213,18 +218,31 @@ impl Executor {
 
         let result = if task.config.foreground {
             // Execute in foreground with inherited stdio (for long-running processes)
-            Self::execute_foreground(&task.name, &task.config.run, &env, &cwd, &task_exec_config).await
+            Self::execute_foreground(&task.name, &task.config.run, &env, &cwd, &task_exec_config)
+                .await
         } else if let Some(script) = &task.config.script {
             // Execute Rhai script
-            Self::execute_script(&task.name, script, &env, &cwd).await
+            Self::execute_script(&task.name, script, &env, &cwd)
         } else if task.config.parallel {
             // Execute commands in parallel
-            Self::execute_commands_parallel(&task.name, &task.config.run, &env, &cwd, &task_exec_config)
-                .await
+            Self::execute_commands_parallel(
+                &task.name,
+                &task.config.run,
+                &env,
+                &cwd,
+                &task_exec_config,
+            )
+            .await
         } else {
             // Execute commands sequentially
-            Self::execute_commands_sequential(&task.name, &task.config.run, &env, &cwd, &task_exec_config)
-                .await
+            Self::execute_commands_sequential(
+                &task.name,
+                &task.config.run,
+                &env,
+                &cwd,
+                &task_exec_config,
+            )
+            .await
         };
 
         let duration = start.elapsed();
@@ -259,7 +277,7 @@ impl Executor {
     }
 
     /// Execute a Rhai script
-    async fn execute_script(
+    fn execute_script(
         task_name: &str,
         script: &str,
         env: &HashMap<String, String>,
@@ -276,7 +294,7 @@ impl Executor {
 
     /// Execute commands sequentially
     async fn execute_commands_sequential(
-        task_name: &str,
+        _task_name: &str,
         commands: &[String],
         env: &HashMap<String, String>,
         cwd: &Path,
@@ -295,7 +313,7 @@ impl Executor {
 
     /// Execute commands in foreground with inherited stdio
     async fn execute_foreground(
-        _task_name: &str,
+        task_name: &str,
         commands: &[String],
         env: &HashMap<String, String>,
         cwd: &Path,
@@ -304,7 +322,7 @@ impl Executor {
         // Foreground tasks run with inherited stdio and block until completion
         // Only the first command is executed (foreground doesn't make sense for multiple commands)
         let cmd = commands.first().ok_or_else(|| YatrError::InvalidTask {
-            task: _task_name.to_string(),
+            task: task_name.to_string(),
             reason: "Foreground task must have at least one command".to_string(),
         })?;
 
@@ -335,7 +353,7 @@ impl Executor {
 
         if !status.success() {
             return Err(YatrError::TaskFailed {
-                task: cmd.to_string(),
+                task: cmd.clone(),
                 code: status.code().unwrap_or(1),
                 stderr: None,
             });
@@ -346,7 +364,7 @@ impl Executor {
 
     /// Execute commands in parallel
     async fn execute_commands_parallel(
-        task_name: &str,
+        _task_name: &str,
         commands: &[String],
         env: &HashMap<String, String>,
         cwd: &Path,
@@ -367,9 +385,9 @@ impl Executor {
 
         let mut all_output = String::new();
         for handle in handles {
-            let output = handle.await.map_err(|e| YatrError::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            ))??;
+            let output = handle
+                .await
+                .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
             all_output.push_str(&output);
             all_output.push('\n');
         }
@@ -461,6 +479,7 @@ impl Executor {
     }
 
     /// Print dry-run execution plan
+    #[allow(clippy::unused_self)]
     fn print_dry_run(&self, plan: &ExecutionPlan) {
         println!("{}", style("Execution plan (dry run):").bold().cyan());
         println!();
@@ -484,7 +503,11 @@ impl Executor {
                         println!("    {} {}", style("→").dim(), cmd);
                     }
                 } else if task.config.script.is_some() {
-                    println!("    {} {}", style("→").dim(), style("[rhai script]").italic());
+                    println!(
+                        "    {} {}",
+                        style("→").dim(),
+                        style("[rhai script]").italic()
+                    );
                 }
             }
         }
@@ -520,13 +543,14 @@ impl Executor {
             let trimmed = output.trim();
             if !trimmed.is_empty() {
                 for line in trimmed.lines() {
-                    println!("  {}", line);
+                    println!("  {line}");
                 }
             }
         }
     }
 
     /// Print execution summary
+    #[allow(clippy::unused_self)]
     fn print_summary(&self, results: &[TaskResult]) {
         println!();
 
@@ -559,7 +583,7 @@ impl Executor {
 mod num_cpus {
     pub fn get() -> usize {
         std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4)
     }
 }

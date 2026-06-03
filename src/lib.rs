@@ -43,6 +43,15 @@
 //! }
 //! ```
 
+#![allow(
+    dead_code,
+    unused,
+    unused_variables,
+    unused_imports,
+    unused_assignments,
+    mismatched_lifetime_syntaxes
+)]
+
 pub mod cache;
 pub mod config;
 pub mod error;
