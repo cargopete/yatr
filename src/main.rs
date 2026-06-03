@@ -96,7 +96,16 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             force,
             parallel,
             shell,
-        } => run_tasks(tasks, *dry_run, *force, *parallel, *shell, cli).await,
+        } => {
+            if tasks.is_empty() {
+                let (config, _) = Config::load(cli.config.as_deref())?;
+                let graph = TaskGraph::from_config(&config)?;
+                print_task_list(&graph, &config, &ListFormat::Table, false);
+                Ok(())
+            } else {
+                run_tasks(tasks, *dry_run, *force, *parallel, *shell, cli).await
+            }
+        }
 
         Commands::List { format, deps } => {
             let (config, _) = Config::load(cli.config.as_deref())?;
