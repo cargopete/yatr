@@ -71,6 +71,10 @@ pub enum Commands {
         /// Write a Chrome trace of the run to this path (open in `chrome://tracing`)
         #[arg(long, value_name = "PATH")]
         profile: Option<PathBuf>,
+
+        /// Only run tasks affected by changes since this git ref
+        #[arg(long, value_name = "GIT_REF")]
+        affected: Option<String>,
     },
 
     /// List available tasks
@@ -122,6 +126,16 @@ pub enum Commands {
 
     /// Print the JSON Schema for yatr.toml (for editor validation/autocomplete)
     Schema,
+
+    /// List tasks affected by changes since a git ref
+    Affected {
+        /// Git ref to compare against (e.g. `main`, `HEAD~1`, `origin/main...HEAD`)
+        git_ref: String,
+
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: ListFormat,
+    },
 }
 
 #[derive(Subcommand, Debug)]

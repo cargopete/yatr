@@ -104,3 +104,63 @@ fn run_profile_writes_chrome_trace() {
     let names: Vec<&str> = events.iter().filter_map(|e| e["name"].as_str()).collect();
     assert!(names.contains(&"a") && names.contains(&"b"));
 }
+
+/// `yatr affected <ref>` lists only tasks whose sources changed since the ref.
+#[test]
+fn affected_lists_tasks_touched_by_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(p)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "tester"]);
+
+    std::fs::create_dir_all(p.join("web")).unwrap();
+    std::fs::create_dir_all(p.join("api")).unwrap();
+    std::fs::write(p.join("web/app.js"), "v1").unwrap();
+    std::fs::write(p.join("api/main.rs"), "v1").unwrap();
+    std::fs::write(
+        p.join("yatr.toml"),
+        "[tasks.frontend]\nsources=[\"web/**\"]\nrun=[\"echo fe\"]\n\
+         [tasks.backend]\nsources=[\"api/**\"]\nrun=[\"echo be\"]\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+
+    // Change only a frontend source.
+    std::fs::write(p.join("web/app.js"), "v2").unwrap();
+
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(p)
+        .args(["affected", "HEAD", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let aff: Vec<&str> = json["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        aff.contains(&"frontend"),
+        "frontend should be affected: {aff:?}"
+    );
+    assert!(
+        !aff.contains(&"backend"),
+        "backend should not be affected: {aff:?}"
+    );
+}

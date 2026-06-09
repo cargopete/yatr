@@ -23,6 +23,7 @@ use clap::Parser;
 use console::style;
 use miette::IntoDiagnostic;
 
+mod affected;
 mod cache;
 mod cli;
 mod config;
@@ -99,6 +100,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             shell,
             json,
             profile,
+            affected,
         } => {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
@@ -113,6 +115,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
                     shell: *shell,
                     json: *json,
                     profile: profile.clone(),
+                    affected: affected.clone(),
                 };
                 run_tasks(tasks, opts, cli).await
             }
@@ -169,7 +172,47 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             println!("{json}");
             Ok(())
         }
+
+        Commands::Affected { git_ref, format } => run_affected_command(git_ref, format, cli),
     }
+}
+
+fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
+    let (config, _) = Config::load(cli.config.as_deref())?;
+    let graph = TaskGraph::from_config(&config)?;
+    let changed = affected::changed_files(git_ref)?;
+    let affected = affected::affected_tasks(&graph, &changed);
+
+    let mut names: Vec<&str> = affected.iter().map(String::as_str).collect();
+    names.sort_unstable();
+
+    match format {
+        ListFormat::Json => print_json(&serde_json::json!({
+            "ref": git_ref,
+            "changed_files": changed,
+            "affected": names,
+        }))?,
+        ListFormat::Plain => {
+            for name in names {
+                println!("{name}");
+            }
+        }
+        ListFormat::Table => {
+            if names.is_empty() {
+                println!("{} No tasks affected since {git_ref}", style("✓").green());
+            } else {
+                println!(
+                    "{}",
+                    style(format!("Affected by changes since {git_ref}:")).bold()
+                );
+                println!();
+                for name in names {
+                    println!("  {}", style(name).cyan().bold());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Options for a `run` invocation.
@@ -181,11 +224,29 @@ struct RunOpts {
     shell: bool,
     json: bool,
     profile: Option<std::path::PathBuf>,
+    affected: Option<String>,
 }
 
 async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     let (config, _) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
+
+    // --affected: keep only the requested tasks that changes since the ref touch.
+    let filtered: Vec<String>;
+    let tasks: &[String] = if let Some(git_ref) = &opts.affected {
+        let changed = affected::changed_files(git_ref)?;
+        let set = affected::affected_tasks(&graph, &changed);
+        filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
+        if filtered.is_empty() && !opts.json {
+            println!(
+                "{} No requested tasks affected since {git_ref} — nothing to do",
+                style("✓").green()
+            );
+        }
+        &filtered
+    } else {
+        tasks
+    };
 
     // JSON dry-run: emit the execution plan rather than running anything.
     if opts.json && opts.dry_run {

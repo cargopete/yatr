@@ -52,6 +52,7 @@
     mismatched_lifetime_syntaxes
 )]
 
+pub mod affected;
 pub mod cache;
 pub mod config;
 pub mod error;

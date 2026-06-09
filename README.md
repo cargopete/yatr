@@ -215,6 +215,7 @@ Commands:
   init     Create yatr.toml template
   check    Validate configuration
   schema   Print the JSON Schema for yatr.toml
+  affected List tasks affected by changes since a git ref
 
 Options:
   -c, --config <PATH>  Config file path
@@ -262,7 +263,29 @@ yatr run --json --dry-run ci # JSON execution plan, without running
 
 # Profiling
 yatr run --profile trace.json ci   # Chrome trace of the run (chrome://tracing / Perfetto)
+
+# Affected (monorepo)
+yatr affected origin/main          # List tasks affected by changes since a git ref
+yatr run --affected origin/main ci # Run only the affected subset of the requested tasks
 ```
+
+## Affected detection (monorepo)
+
+In a large repo you don't want to run everything on every change. `yatr affected
+<git-ref>` lists the tasks touched by changes since a ref — a task is affected
+when one of its `sources`/`watch` globs matches a changed file, and the result
+propagates to everything that (transitively) depends on it.
+
+```bash
+yatr affected main                  # what would I need to run for this branch?
+yatr affected HEAD~1 --format json  # machine-readable, for CI
+yatr run --affected origin/main test lint build   # run only the affected ones
+```
+
+Caching already gives you *correctness* (unchanged tasks are cache hits); affected
+detection adds *speed at scale* by not even considering tasks git says can't have
+moved. A task that declares no `sources` is treated as always affected — declaring
+`sources` is what unlocks skipping.
 
 ## Shared (remote) cache
 
