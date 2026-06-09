@@ -300,13 +300,18 @@ desc = "Run a sandboxed WASM plugin"
 wasm = "plugins/codegen.wasm"   # local path, relative to the task's working directory
 
 [tasks.shared]
-wasm = "https://example.com/releases/v1/plugin.wasm"   # or an http(s) URL
+wasm = "https://example.com/releases/v1/plugin.wasm"   # an http(s) URL
+
+[tasks.gh]
+wasm = "github:owner/repo@v1.0.0/plugin.wasm"          # …or a GitHub release asset
 ```
 
-A `wasm` reference may be a local path or an `http(s)://` **URL** — remote
-plugins are downloaded once into a local plugin cache and reused (override the
-cache dir with `YATR_PLUGIN_DIR`). Use a versioned URL so a new release is picked
-up. Because plugins run sandboxed, even an untrusted remote plugin can't escape.
+A `wasm` reference may be a local path, an `http(s)://` **URL**, or a
+`github:owner/repo@tag/asset.wasm` shorthand (resolved to that release asset).
+Remote plugins are downloaded once into a local plugin cache and reused (override
+the cache dir with `YATR_PLUGIN_DIR`). Use a versioned ref so a new release is
+picked up. Because plugins run sandboxed, even an untrusted remote plugin can't
+escape.
 
 Plugins are **capability-sandboxed**: they run in a pure-Rust interpreter with
 *only* yatr's host ABI imported — no filesystem, network, or clock unless yatr

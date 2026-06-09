@@ -29,25 +29,62 @@ use crate::error::{Result, YatrError};
 
 /// Resolve a plugin reference to a local `.wasm` file path.
 ///
-/// A reference may be a local path (resolved relative to `cwd`) or an
-/// `http(s)://` URL, in which case the plugin is downloaded once into a local
-/// plugin cache and reused on subsequent runs. Remote plugins are still run in
-/// the same capability sandbox, so an untrusted plugin cannot escape.
+/// A reference may be:
+/// - a local path (resolved relative to `cwd`),
+/// - an `http(s)://` URL, or
+/// - a `github:owner/repo@tag/asset.wasm` shorthand for a release asset.
+///
+/// Remote references are downloaded once into a local plugin cache and reused.
+/// Remote plugins still run in the same capability sandbox, so an untrusted
+/// plugin cannot escape.
 pub async fn resolve_plugin(wasm_ref: &str, cwd: &Path, task_name: &str) -> Result<PathBuf> {
-    if is_remote(wasm_ref) {
-        fetch_cached(wasm_ref, &plugins_cache_dir(), task_name).await
+    let remote_url = if is_remote(wasm_ref) {
+        Some(wasm_ref.to_string())
+    } else if let Some(spec) = wasm_ref.strip_prefix("github:") {
+        Some(github_release_url(spec).ok_or_else(|| YatrError::Plugin {
+            task: task_name.to_string(),
+            message: format!(
+                "invalid github plugin locator '{wasm_ref}' \
+                 (expected github:owner/repo@tag/asset.wasm)"
+            ),
+        })?)
     } else {
-        let p = Path::new(wasm_ref);
-        Ok(if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            cwd.join(p)
-        })
+        None
+    };
+
+    if let Some(url) = remote_url {
+        return fetch_cached(&url, &plugins_cache_dir(), task_name).await;
     }
+
+    let p = Path::new(wasm_ref);
+    Ok(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    })
+}
+
+/// True if a plugin reference is fetched over the network rather than from disk.
+#[must_use]
+pub fn is_remote_ref(s: &str) -> bool {
+    is_remote(s) || s.starts_with("github:")
 }
 
 fn is_remote(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
+}
+
+/// Map `owner/repo@tag/asset.wasm` to its GitHub release-asset download URL.
+fn github_release_url(spec: &str) -> Option<String> {
+    let (repo, reference) = spec.split_once('@')?;
+    let (owner, name) = repo.split_once('/')?;
+    let (tag, asset) = reference.rsplit_once('/')?;
+    if owner.is_empty() || name.is_empty() || tag.is_empty() || asset.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{owner}/{name}/releases/download/{tag}/{asset}"
+    ))
 }
 
 /// Directory where downloaded plugins are cached. Overridable via
@@ -263,6 +300,25 @@ mod tests {
         );
         let out = run_plugin(&path, "t", br#"{"task":"t","env":{"K":"V"}}"#).unwrap();
         assert_eq!(out, r#"{"task":"t","env":{"K":"V"}}"#);
+    }
+
+    #[test]
+    fn github_locator_parsing() {
+        assert_eq!(
+            github_release_url("octocat/tools@v1.2.0/codegen.wasm").unwrap(),
+            "https://github.com/octocat/tools/releases/download/v1.2.0/codegen.wasm"
+        );
+        // Tags may contain slashes; the asset is the last path segment.
+        assert_eq!(
+            github_release_url("o/r@release/v1/p.wasm").unwrap(),
+            "https://github.com/o/r/releases/download/release/v1/p.wasm"
+        );
+        // Malformed locators are rejected.
+        assert!(github_release_url("noatsign.wasm").is_none());
+        assert!(github_release_url("owner@tag/asset.wasm").is_none()); // no repo
+        assert!(github_release_url("owner/repo@tagonly").is_none()); // no asset
+        assert!(is_remote_ref("github:o/r@v1/p.wasm"));
+        assert!(!is_remote_ref("./local.wasm"));
     }
 
     #[tokio::test]

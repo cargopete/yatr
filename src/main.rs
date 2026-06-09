@@ -191,8 +191,7 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         }
         if let Some(wasm) = &task.wasm {
             let wasm_str = wasm.to_string_lossy();
-            let is_url = wasm_str.starts_with("http://") || wasm_str.starts_with("https://");
-            if !is_url {
+            if !wasm::is_remote_ref(&wasm_str) {
                 let resolved = if wasm.is_absolute() {
                     wasm.clone()
                 } else {
