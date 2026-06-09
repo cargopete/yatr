@@ -75,10 +75,12 @@ file does not. Verified end-to-end against the binary.
 
 ### v0.3 — DX & observability (cheap, compounding, parallelisable)
 
-- Publish a **JSON Schema** for `yatr.toml`; document editor setup (VS Code / JetBrains).
-- Polish `check` and error messages toward best-in-class.
-- **Structured JSON run output** + per-task timing in the run summary.
-- `--profile` producing a Chrome-trace / flamegraph.
+- [x] Publish a **JSON Schema** for `yatr.toml` (`schemars`-derived; `yatr schema`
+  subcommand + committed `yatr.schema.json`); editor setup documented in the README.
+- [x] **Structured JSON run output** (`yatr run --json`): per-task results + summary, and a
+  JSON execution plan under `--json --dry-run`. Per-task timing is already shown inline.
+- [ ] Polish `check` and error messages toward best-in-class.
+- [ ] `--profile` producing a Chrome-trace / flamegraph.
 
 ### v0.4 — Remote cache (the headline) 🟢 strategic differentiator #1
 

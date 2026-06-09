@@ -46,6 +46,8 @@ pub struct ExecutorConfig {
     pub shell: bool,
     /// Verbose output
     pub verbose: bool,
+    /// Suppress human output; caller emits machine-readable JSON instead
+    pub json: bool,
 }
 
 impl Default for ExecutorConfig {
@@ -57,6 +59,7 @@ impl Default for ExecutorConfig {
             cwd: std::env::current_dir().unwrap_or_default(),
             shell: false,
             verbose: false,
+            json: false,
         }
     }
 }
@@ -87,7 +90,9 @@ impl Executor {
         let plan = ExecutionPlan::from_tasks(tasks, graph);
 
         if self.exec_config.dry_run {
-            self.print_dry_run(&plan);
+            if !self.exec_config.json {
+                self.print_dry_run(&plan);
+            }
             return Ok(Vec::new());
         }
 
@@ -123,13 +128,17 @@ impl Executor {
                         }
                     };
 
-                    let pb = mp.add(ProgressBar::new_spinner());
-                    let style = ProgressStyle::default_spinner()
-                        .template("{spinner:.cyan} {msg}")
-                        .unwrap_or_else(|_| ProgressStyle::default_spinner());
-                    pb.set_style(style);
-                    pb.set_message(format!("Running {}", task_clone.name));
-                    pb.enable_steady_tick(Duration::from_millis(100));
+                    // Progress spinner is human-only; suppress it in JSON mode.
+                    let pb = (!exec_config.json).then(|| {
+                        let pb = mp.add(ProgressBar::new_spinner());
+                        let style = ProgressStyle::default_spinner()
+                            .template("{spinner:.cyan} {msg}")
+                            .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                        pb.set_style(style);
+                        pb.set_message(format!("Running {}", task_clone.name));
+                        pb.enable_steady_tick(Duration::from_millis(100));
+                        pb
+                    });
 
                     let result = Self::execute_single_task(
                         &task_clone,
@@ -139,7 +148,9 @@ impl Executor {
                     )
                     .await;
 
-                    pb.finish_and_clear();
+                    if let Some(pb) = pb {
+                        pb.finish_and_clear();
+                    }
                     result
                 });
 
@@ -158,7 +169,9 @@ impl Executor {
                     .get_task(&task_name)
                     .is_some_and(|t| t.config.allow_failure);
 
-                Self::print_task_result(&result);
+                if !self.exec_config.json {
+                    Self::print_task_result(&result);
+                }
                 all_results.push(result);
 
                 if !success && !allow_failure {
@@ -171,7 +184,9 @@ impl Executor {
             }
         }
 
-        self.print_summary(&all_results);
+        if !self.exec_config.json {
+            self.print_summary(&all_results);
+        }
         Ok(all_results)
     }
 

@@ -63,6 +63,10 @@ pub enum Commands {
         /// Use shell to execute commands
         #[arg(long)]
         shell: bool,
+
+        /// Emit machine-readable JSON instead of human output
+        #[arg(long)]
+        json: bool,
     },
 
     /// List available tasks
@@ -111,6 +115,9 @@ pub enum Commands {
 
     /// Validate yatr.toml configuration
     Check,
+
+    /// Print the JSON Schema for yatr.toml (for editor validation/autocomplete)
+    Schema,
 }
 
 #[derive(Subcommand, Debug)]

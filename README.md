@@ -205,6 +205,7 @@ Commands:
   cache    Manage task cache
   init     Create yatr.toml template
   check    Validate configuration
+  schema   Print the JSON Schema for yatr.toml
 
 Options:
   -c, --config <PATH>  Config file path
@@ -243,7 +244,34 @@ yatr graph --format dot build | dot -Tpng > graph.png
 # Cache management
 yatr cache stats             # Show cache statistics
 yatr cache clear             # Clear all cached results
+yatr cache clear build       # Clear cache for one task
 yatr cache path              # Show cache directory
+
+# Machine-readable output
+yatr run --json test         # Structured JSON: per-task results + summary
+yatr run --json --dry-run ci # JSON execution plan, without running
+```
+
+## Editor integration
+
+yatr ships a JSON Schema for `yatr.toml`, giving you autocomplete, hover docs,
+and validation in any editor that supports schema-validated TOML.
+
+```bash
+yatr schema > yatr.schema.json   # regenerate the schema any time
+```
+
+Point your editor at it. With taplo / the **Even Better TOML** VS Code extension,
+add a directive to the top of your `yatr.toml`:
+
+```toml
+#:schema ./yatr.schema.json
+```
+
+or associate it globally in VS Code settings:
+
+```json
+"evenBetterToml.schema.associations": { "yatr\\.toml$": "./yatr.schema.json" }
 ```
 
 ## Showcases

@@ -1,0 +1,201 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "description": "Root configuration structure",
+  "type": "object",
+  "properties": {
+    "env": {
+      "description": "Global environment variables",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "settings": {
+      "description": "Global settings",
+      "default": {
+        "cache": false,
+        "cache_dir": null,
+        "parallelism": 0,
+        "shell": null,
+        "watch_debounce_ms": 0
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Settings"
+        }
+      ]
+    },
+    "tasks": {
+      "description": "Task definitions",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/TaskConfig"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Settings": {
+      "description": "Global settings for YATR behavior",
+      "type": "object",
+      "properties": {
+        "cache": {
+          "description": "Enable caching by default",
+          "default": true,
+          "type": "boolean"
+        },
+        "cache_dir": {
+          "description": "Cache directory (defaults to .yatr/cache)",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parallelism": {
+          "description": "Default parallelism level (0 = number of CPUs)",
+          "default": 0,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "shell": {
+          "description": "Default shell to use (if shell mode enabled)",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "watch_debounce_ms": {
+          "description": "Watch debounce delay in milliseconds",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskConfig": {
+      "description": "Configuration for a single task",
+      "type": "object",
+      "properties": {
+        "allow_failure": {
+          "description": "Continue even if this task fails",
+          "default": false,
+          "type": "boolean"
+        },
+        "cwd": {
+          "description": "Working directory for this task",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends": {
+          "description": "Tasks that must complete before this one",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "desc": {
+          "description": "Human-readable description",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "Task-specific environment variables",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "foreground": {
+          "description": "Run in foreground with inherited stdio (for long-running processes like dev servers)",
+          "default": false,
+          "type": "boolean"
+        },
+        "no_cache": {
+          "description": "Skip caching for this task",
+          "default": false,
+          "type": "boolean"
+        },
+        "outputs": {
+          "description": "Output files/directories produced by this task",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parallel": {
+          "description": "Run commands in parallel",
+          "default": false,
+          "type": "boolean"
+        },
+        "run": {
+          "description": "Commands to run (simple string list mode)",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "script": {
+          "description": "Rhai script to execute (alternative to `run`)",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shell": {
+          "description": "Use shell to execute commands",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "Files that affect the cache key (glob patterns)",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Timeout in seconds",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "watch": {
+          "description": "Files to watch for this task (glob patterns)",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

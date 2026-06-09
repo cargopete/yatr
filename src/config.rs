@@ -2,6 +2,7 @@
 //!
 //! Handles loading and validating the task runner configuration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use crate::error::{Result, YatrError};
 pub const CONFIG_FILES: &[&str] = &["yatr.toml", "Yatr.toml"];
 
 /// Root configuration structure
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
 pub struct Config {
@@ -30,7 +31,7 @@ pub struct Config {
 }
 
 /// Global settings for YATR behavior
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     /// Default shell to use (if shell mode enabled)
@@ -63,7 +64,7 @@ const fn default_debounce() -> u64 {
 }
 
 /// Configuration for a single task
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskConfig {
     /// Human-readable description

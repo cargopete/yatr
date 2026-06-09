@@ -35,7 +35,7 @@ mod watch;
 use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};
 use config::Config;
 use error::{Result, YatrError};
-use executor::{Executor, ExecutorConfig};
+use executor::{Executor, ExecutorConfig, TaskResult};
 use graph::TaskGraph;
 
 #[tokio::main]
@@ -77,7 +77,9 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.effective_command() {
         EffectiveCommand::Subcommand(cmd) => run_command(cmd, &cli).await,
-        EffectiveCommand::RunTasks(tasks) => run_tasks(tasks, false, false, 0, false, &cli).await,
+        EffectiveCommand::RunTasks(tasks) => {
+            run_tasks(tasks, false, false, 0, false, false, &cli).await
+        }
         EffectiveCommand::None => {
             // No command - show help or list tasks
             let (config, _) = Config::load(cli.config.as_deref())?;
@@ -96,6 +98,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             force,
             parallel,
             shell,
+            json,
         } => {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
@@ -103,7 +106,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
                 print_task_list(&graph, &config, &ListFormat::Table, false);
                 Ok(())
             } else {
-                run_tasks(tasks, *dry_run, *force, *parallel, *shell, cli).await
+                run_tasks(tasks, *dry_run, *force, *parallel, *shell, *json, cli).await
             }
         }
 
@@ -150,19 +153,44 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             );
             Ok(())
         }
+
+        Commands::Schema => {
+            let schema = schemars::schema_for!(Config);
+            let json = serde_json::to_string_pretty(&schema)
+                .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
+            println!("{json}");
+            Ok(())
+        }
     }
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 async fn run_tasks(
     tasks: &[String],
     dry_run: bool,
     force: bool,
     parallel: usize,
     shell: bool,
+    json: bool,
     cli: &Cli,
 ) -> Result<()> {
     let (config, _) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
+
+    // JSON dry-run: emit the execution plan rather than running anything.
+    if json && dry_run {
+        let mut plan = Vec::new();
+        for task in tasks {
+            let order: Vec<&str> = graph
+                .execution_order(task)?
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect();
+            plan.push(serde_json::json!({ "task": task, "order": order }));
+        }
+        print_json(&serde_json::json!({ "plan": plan }))?;
+        return Ok(());
+    }
 
     let cache = if config.settings.cache && !dry_run {
         Some(cache::Cache::new(config.settings.cache_dir.clone())?)
@@ -177,14 +205,60 @@ async fn run_tasks(
         cwd: std::env::current_dir()?,
         shell,
         verbose: cli.verbose,
+        json,
     };
 
     let executor = Executor::new(config, exec_config, cache);
 
+    let mut all_results = Vec::new();
     for task in tasks {
-        executor.execute(&graph, task).await?;
+        let mut results = executor.execute(&graph, task).await?;
+        all_results.append(&mut results);
     }
 
+    if json {
+        print_run_json(&all_results)?;
+    }
+
+    Ok(())
+}
+
+/// Serialize a run's task results into the structured `--json` document.
+fn print_run_json(results: &[TaskResult]) -> Result<()> {
+    let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+
+    let tasks: Vec<_> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "success": r.success,
+                "cached": r.cached,
+                "duration_ms": ms(r.duration),
+                "output": r.output,
+                "error": r.error,
+            })
+        })
+        .collect();
+
+    let doc = serde_json::json!({
+        "tasks": tasks,
+        "summary": {
+            "succeeded": results.iter().filter(|r| r.success).count(),
+            "failed": results.iter().filter(|r| !r.success).count(),
+            "cached": results.iter().filter(|r| r.cached).count(),
+            "duration_ms": results.iter().map(|r| ms(r.duration)).sum::<u64>(),
+        }
+    });
+
+    print_json(&doc)
+}
+
+/// Print a JSON value to stdout, pretty-printed.
+fn print_json(value: &serde_json::Value) -> Result<()> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
+    println!("{text}");
     Ok(())
 }
 
