@@ -452,6 +452,9 @@ impl Cache {
         if let Some(script) = &config.script {
             hasher.update(script.as_bytes());
         }
+        if let Some(wasm) = &config.wasm {
+            hasher.update(wasm.to_string_lossy().as_bytes());
+        }
 
         // The task's *declared* (relative) working directory and shell mode
         // change command semantics. We deliberately hash the relative `cwd`

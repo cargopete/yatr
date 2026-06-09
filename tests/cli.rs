@@ -164,3 +164,37 @@ fn affected_lists_tasks_touched_by_changes() {
         "backend should not be affected: {aff:?}"
     );
 }
+
+/// A task backed by a WASM plugin runs and its emitted output is captured.
+#[test]
+fn run_executes_wasm_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let wasm = wat::parse_str(
+        r#"(module
+            (import "yatr" "emit" (func $emit (param i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "from plugin")
+            (func (export "run") (result i32)
+                (call $emit (i32.const 0) (i32.const 11))
+                (i32.const 0)))"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("p.wasm"), wasm).unwrap();
+
+    let mut cfg = std::fs::File::create(dir.path().join("yatr.toml")).unwrap();
+    write!(
+        cfg,
+        "[settings]\ncache = false\n[tasks.gen]\nwasm = \"p.wasm\"\n"
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["run", "gen"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("from plugin"), "stdout: {stdout}");
+}

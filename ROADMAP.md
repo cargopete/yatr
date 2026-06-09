@@ -120,11 +120,14 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
 - [x] **Config includes** — `include = [...]` composes task definitions across multiple
   `yatr.toml` files (recursive, cycle-detected, duplicate-task errors), so a repo can keep tasks
   next to the code they build.
-- **WASM / Extism plugin system** 🟢 strategic differentiator #2 — the clearest moat. A
-  capability-sandboxed, polyglot plugin API (custom task types, cache-key contributors,
-  toolchain providers, output reporters), plugins distributed as `.wasm` via file/GitHub
-  locators. Leans directly on the author's WASM/WASI/Wasmtime expertise; the simple-runner tier
-  has nothing like it.
+- **WASM plugin system** 🟢 strategic differentiator #2 — the clearest moat. **Slice 1 shipped:**
+  - [x] WASM-backed task type (`wasm = "plugin.wasm"`) running in a pure-Rust `wasmi` interpreter,
+    **capability-sandboxed** (only yatr's `emit`/`log` host ABI imported — no fs/network/clock).
+    Plugins export `run() -> i32`; output is captured and cached like any task. Also accepts `.wat`.
+  - [ ] Richer host ABI (read inputs/env, declare cache-key contributions, structured I/O).
+  - [ ] Plugin locators (file / GitHub) + a PDK for ergonomic plugin authoring in Rust.
+  - [ ] More plugin roles: custom task runners, cache-key contributors, toolchain providers,
+    output reporters.
 - **Toolchain management / pinning** — the single biggest _polyglot_ gap. A `[toolchain]`
   section that pins + auto-downloads language runtimes, or deep integration with mise / proto.
 - **gRPC REAPI cache** with `GetCapabilities` digest negotiation (broader server compatibility).

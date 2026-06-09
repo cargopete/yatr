@@ -60,6 +60,7 @@ pub mod executor;
 pub mod graph;
 pub mod remote;
 pub mod script;
+pub mod wasm;
 pub mod watch;
 
 // Re-export main types

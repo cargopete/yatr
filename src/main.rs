@@ -32,6 +32,7 @@ mod executor;
 mod graph;
 mod remote;
 mod script;
+mod wasm;
 mod watch;
 
 use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};

@@ -121,6 +121,11 @@ pub struct TaskConfig {
     #[serde(default)]
     pub script: Option<String>,
 
+    /// WASM plugin to run for this task (alternative to `run`/`script`).
+    /// Path is relative to the task's working directory.
+    #[serde(default)]
+    pub wasm: Option<PathBuf>,
+
     /// Tasks that must complete before this one
     #[serde(default)]
     pub depends: Vec<String>,
@@ -266,22 +271,24 @@ impl Config {
     /// Validate the configuration
     fn validate(&self) -> Result<()> {
         for (name, task) in &self.tasks {
-            // Task must have either `run`, `script`, or dependencies
+            // Task must have one of `run`, `script`, `wasm`, or dependencies
             let has_run = !task.run.is_empty();
             let has_script = task.script.is_some();
+            let has_wasm = task.wasm.is_some();
             let has_depends = !task.depends.is_empty();
 
-            if !has_run && !has_script && !has_depends {
+            if !has_run && !has_script && !has_wasm && !has_depends {
                 return Err(YatrError::InvalidTask {
                     task: name.clone(),
-                    reason: "Task must have 'run' commands, 'script', or 'depends'".to_string(),
+                    reason: "Task must have 'run' commands, 'script', 'wasm', or 'depends'"
+                        .to_string(),
                 });
             }
 
-            if has_run && has_script {
+            if usize::from(has_run) + usize::from(has_script) + usize::from(has_wasm) > 1 {
                 return Err(YatrError::InvalidTask {
                     task: name.clone(),
-                    reason: "Task cannot have both 'run' and 'script'".to_string(),
+                    reason: "Task can only have one of 'run', 'script', or 'wasm'".to_string(),
                 });
             }
 

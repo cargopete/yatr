@@ -247,6 +247,14 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "wasm": {
+          "description": "WASM plugin to run for this task (alternative to `run`/`script`). Path is relative to the task's working directory.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "watch": {
           "description": "Files to watch for this task (glob patterns)",
           "default": [],

@@ -23,6 +23,7 @@ truth: content-addressed, output-restoring, and shareable across machines and CI
 | Signed cache (anti-poisoning) | ❌ | ❌ | ❌ | ✅ |
 | Watch mode | ❌ | ❌ | ❌ | ✅ |
 | Config schema + JSON output | ❌ | ❌ | ❌ | ✅ |
+| Sandboxed WASM plugins | ❌ | ❌ | ❌ | ✅ |
 | Scripting | Shell | Shell | Multiple | Rhai |
 | Cross-platform | ❌ | ⚠️ | ✅ | ✅ |
 | Zero runtime deps | N/A | ✅ | ❌ | ✅ |
@@ -286,6 +287,33 @@ Caching already gives you *correctness* (unchanged tasks are cache hits); affect
 detection adds *speed at scale* by not even considering tasks git says can't have
 moved. A task that declares no `sources` is treated as always affected — declaring
 `sources` is what unlocks skipping.
+
+## WASM plugins
+
+A task can be implemented by a WebAssembly plugin instead of shell commands or a
+Rhai script — write it in any language that compiles to `wasm32`, ship a single
+`.wasm`, and run it anywhere yatr runs:
+
+```toml
+[tasks.codegen]
+desc = "Run a sandboxed WASM plugin"
+wasm = "plugins/codegen.wasm"   # path relative to the task's working directory
+```
+
+Plugins are **capability-sandboxed**: they run in a pure-Rust interpreter with
+*only* yatr's host ABI imported — no filesystem, network, or clock unless yatr
+grants it. A plugin that tries to import anything else (e.g. WASI) fails to load.
+
+A plugin is a wasm module that exports its `memory` and a `run() -> i32` entry
+point (`0` = success), and may import two host functions from module `"yatr"`:
+
+| Import | Signature | Effect |
+|--------|-----------|--------|
+| `emit` | `(ptr: i32, len: i32)` | Append the UTF-8 string at that memory range to the task's output |
+| `log`  | `(ptr: i32, len: i32)` | Log the string as an info message |
+
+Plugin output is captured and cached like any other task. (The plugin runtime
+also accepts `.wat` text, handy for quick experiments.)
 
 ## Splitting config across files
 

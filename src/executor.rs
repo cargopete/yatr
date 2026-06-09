@@ -242,6 +242,9 @@ impl Executor {
             // Execute in foreground with inherited stdio (for long-running processes)
             Self::execute_foreground(&task.name, &task.config.run, &env, &cwd, &task_exec_config)
                 .await
+        } else if let Some(wasm) = &task.config.wasm {
+            // Execute a sandboxed WASM plugin
+            Self::execute_wasm(&task.name, wasm, &cwd)
         } else if let Some(script) = &task.config.script {
             // Execute Rhai script
             Self::execute_script(&task.name, script, &env, &cwd)
@@ -316,6 +319,17 @@ impl Executor {
                 task: task_name.to_string(),
                 source: e,
             })
+    }
+
+    /// Execute a sandboxed WASM plugin. The path is resolved relative to the
+    /// task's working directory.
+    fn execute_wasm(task_name: &str, wasm: &Path, cwd: &Path) -> Result<String> {
+        let path = if wasm.is_absolute() {
+            wasm.to_path_buf()
+        } else {
+            cwd.join(wasm)
+        };
+        crate::wasm::run_plugin(&path, task_name)
     }
 
     /// Execute commands sequentially

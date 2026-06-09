@@ -73,6 +73,10 @@ pub enum YatrError {
     #[diagnostic(code(yatr::config::invalid))]
     InvalidConfig { message: String },
 
+    #[error("WASM plugin error in task '{task}': {message}")]
+    #[diagnostic(code(yatr::plugin))]
+    Plugin { task: String, message: String },
+
     #[error("I/O error")]
     #[diagnostic(code(yatr::io))]
     Io(#[from] std::io::Error),
