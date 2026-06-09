@@ -17,6 +17,12 @@ pub const CONFIG_FILES: &[&str] = &["yatr.toml", "Yatr.toml"];
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
 pub struct Config {
+    /// Other yatr.toml files to merge in (paths relative to this file).
+    /// Their tasks and env are composed into this config; their settings are
+    /// ignored (the root file's settings are authoritative).
+    #[serde(default)]
+    pub include: Vec<PathBuf>,
+
     /// Global environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
@@ -180,15 +186,59 @@ impl Config {
             None => Self::find_config()?,
         };
 
-        let content = std::fs::read_to_string(&config_path)?;
-        let config: Self = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
-            source: e,
-            path: config_path.clone(),
-        })?;
-
+        let mut visited = std::collections::HashSet::new();
+        let config = Self::load_with_includes(&config_path, &mut visited)?;
         config.validate()?;
 
         Ok((config, config_path))
+    }
+
+    /// Load a config file and recursively merge any files it `include`s.
+    fn load_with_includes(
+        path: &Path,
+        visited: &mut std::collections::HashSet<PathBuf>,
+    ) -> Result<Self> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if !visited.insert(canonical) {
+            return Err(YatrError::InvalidConfig {
+                message: format!("include cycle detected at {}", path.display()),
+            });
+        }
+
+        let content = std::fs::read_to_string(path).map_err(|e| YatrError::InvalidConfig {
+            message: format!("failed to read included config {}: {e}", path.display()),
+        })?;
+        let mut config: Self = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
+            source: e,
+            path: path.to_path_buf(),
+        })?;
+
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for inc in std::mem::take(&mut config.include) {
+            let inc_path = base.join(&inc);
+            let included = Self::load_with_includes(&inc_path, visited)?;
+            config.merge_from(included)?;
+        }
+
+        Ok(config)
+    }
+
+    /// Merge another config's tasks and env into this one. Duplicate task names
+    /// are an error; existing (root) env entries win over included ones; the
+    /// other config's settings are ignored.
+    fn merge_from(&mut self, other: Self) -> Result<()> {
+        for (name, task) in other.tasks {
+            if self.tasks.contains_key(&name) {
+                return Err(YatrError::InvalidConfig {
+                    message: format!("task '{name}' is defined in more than one config file"),
+                });
+            }
+            self.tasks.insert(name, task);
+        }
+        for (key, value) in other.env {
+            self.env.entry(key).or_insert(value);
+        }
+        Ok(())
     }
 
     /// Search for config file starting from current directory
@@ -320,5 +370,58 @@ mod tests {
 
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.tasks["bump"].script.is_some());
+    }
+
+    #[test]
+    fn test_include_merges_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shared.toml"),
+            "[tasks.lint]\nrun=[\"echo lint\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("yatr.toml"),
+            "include=[\"shared.toml\"]\n[tasks.build]\nrun=[\"echo build\"]\n",
+        )
+        .unwrap();
+
+        let (config, _) = Config::load(Some(&dir.path().join("yatr.toml"))).unwrap();
+        assert!(config.tasks.contains_key("build"));
+        assert!(config.tasks.contains_key("lint"));
+    }
+
+    #[test]
+    fn test_include_duplicate_task_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shared.toml"),
+            "[tasks.build]\nrun=[\"echo a\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("yatr.toml"),
+            "include=[\"shared.toml\"]\n[tasks.build]\nrun=[\"echo b\"]\n",
+        )
+        .unwrap();
+
+        assert!(Config::load(Some(&dir.path().join("yatr.toml"))).is_err());
+    }
+
+    #[test]
+    fn test_include_cycle_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.toml"),
+            "include=[\"b.toml\"]\n[tasks.x]\nrun=[\"echo x\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            "include=[\"a.toml\"]\n[tasks.y]\nrun=[\"echo y\"]\n",
+        )
+        .unwrap();
+
+        assert!(Config::load(Some(&dir.path().join("a.toml"))).is_err());
     }
 }

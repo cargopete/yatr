@@ -117,7 +117,9 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
 - [x] **`affected` monorepo mode:** `yatr affected <git-ref>` lists tasks touched by changes
   since a ref (sources/watch glob match → directly affected, propagated to transitive
   dependents); `yatr run --affected <ref>` filters a run to the affected subset.
-- [ ] Per-directory `yatr.toml` includes / inheritance (the rest of monorepo support).
+- [x] **Config includes** — `include = [...]` composes task definitions across multiple
+  `yatr.toml` files (recursive, cycle-detected, duplicate-task errors), so a repo can keep tasks
+  next to the code they build.
 - **WASM / Extism plugin system** 🟢 strategic differentiator #2 — the clearest moat. A
   capability-sandboxed, polyglot plugin API (custom task types, cache-key contributors,
   toolchain providers, output reporters), plugins distributed as `.wasm` via file/GitHub

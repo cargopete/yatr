@@ -287,6 +287,23 @@ detection adds *speed at scale* by not even considering tasks git says can't hav
 moved. A task that declares no `sources` is treated as always affected — declaring
 `sources` is what unlocks skipping.
 
+## Splitting config across files
+
+Large repos can keep task definitions next to the code they build and compose
+them from a root `yatr.toml` with `include`:
+
+```toml
+# yatr.toml
+include = ["frontend/yatr.toml", "backend/yatr.toml"]
+
+[tasks.build-all]
+depends = ["fe-build", "be-build"]   # tasks defined in the included files
+```
+
+Includes are resolved relative to the including file and merged recursively
+(cycles are detected). Tasks and `env` are composed; the root file's `settings`
+are authoritative. A task defined in two files is an error — names are global.
+
 ## Shared (remote) cache
 
 Point yatr at a shared HTTP cache and a task built on one machine (or in CI) is

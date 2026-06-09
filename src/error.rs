@@ -69,6 +69,10 @@ pub enum YatrError {
     #[diagnostic(code(yatr::config::invalid_task))]
     InvalidTask { task: String, reason: String },
 
+    #[error("Invalid configuration: {message}")]
+    #[diagnostic(code(yatr::config::invalid))]
+    InvalidConfig { message: String },
+
     #[error("I/O error")]
     #[diagnostic(code(yatr::io))]
     Io(#[from] std::io::Error),

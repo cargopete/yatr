@@ -12,6 +12,14 @@
         "type": "string"
       }
     },
+    "include": {
+      "description": "Other yatr.toml files to merge in (paths relative to this file). Their tasks and env are composed into this config; their settings are ignored (the root file's settings are authoritative).",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "settings": {
       "description": "Global settings",
       "default": {
