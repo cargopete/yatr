@@ -59,6 +59,15 @@ pub struct ActionResult {
     pub outputs: Vec<OutputEntry>,
 }
 
+/// On-disk/on-wire wrapper around an [`ActionResult`], carrying an optional
+/// keyed-BLAKE3 MAC over the canonical `result` bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SignedAc {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sig: Option<String>,
+    result: ActionResult,
+}
+
 /// Task result cache
 #[derive(Debug, Clone)]
 pub struct Cache {
@@ -68,6 +77,8 @@ pub struct Cache {
     enabled: bool,
     /// Optional shared/remote backend
     remote: Option<RemoteCache>,
+    /// Optional 32-byte key for signing/verifying action results
+    signing_key: Option<[u8; 32]>,
 }
 
 impl Cache {
@@ -87,6 +98,7 @@ impl Cache {
             dir,
             enabled: true,
             remote: None,
+            signing_key: None,
         })
     }
 
@@ -97,6 +109,19 @@ impl Cache {
         self
     }
 
+    /// Attach an optional signing key, derived from a user secret (builder style).
+    #[must_use]
+    pub const fn with_signing_key(mut self, key: Option<[u8; 32]>) -> Self {
+        self.signing_key = key;
+        self
+    }
+
+    /// Derive a 32-byte signing key from a user-supplied secret string.
+    #[must_use]
+    pub fn derive_key(secret: &str) -> [u8; 32] {
+        blake3::derive_key("yatr cache action-result signing v1", secret.as_bytes())
+    }
+
     /// Create a disabled cache (no-op)
     #[must_use]
     pub const fn disabled() -> Self {
@@ -104,6 +129,7 @@ impl Cache {
             dir: PathBuf::new(),
             enabled: false,
             remote: None,
+            signing_key: None,
         }
     }
 
@@ -153,9 +179,40 @@ impl Cache {
 
     /// Load and validate a local action-cache entry for `key`.
     fn load_local_ac(&self, key: &str, task_name: &str) -> Option<ActionResult> {
-        let content = std::fs::read_to_string(self.ac_path(key)).ok()?;
-        let result = serde_json::from_str::<ActionResult>(&content).ok()?;
-        (result.task == task_name && result.success).then_some(result)
+        let bytes = std::fs::read(self.ac_path(key)).ok()?;
+        self.extract_verified(&bytes, task_name)
+    }
+
+    /// Sign action-result bytes with the keyed MAC, if a signing key is set.
+    fn sign(&self, result_bytes: &[u8]) -> Option<String> {
+        self.signing_key
+            .map(|k| blake3::keyed_hash(&k, result_bytes).to_hex().to_string())
+    }
+
+    /// Parse a stored/received [`SignedAc`], verify its MAC (when a signing key
+    /// is configured), and return the inner result if it is valid and matches
+    /// the expected task. A signature mismatch is rejected loudly.
+    fn extract_verified(&self, bytes: &[u8], task_name: &str) -> Option<ActionResult> {
+        let signed = serde_json::from_slice::<SignedAc>(bytes).ok()?;
+
+        if let Some(key) = self.signing_key {
+            let result_bytes = serde_json::to_vec(&signed.result).ok()?;
+            let expected = blake3::keyed_hash(&key, &result_bytes);
+            // Constant-time comparison via blake3::Hash equality.
+            let ok = signed
+                .sig
+                .as_deref()
+                .and_then(|s| blake3::Hash::from_hex(s).ok())
+                .is_some_and(|got| got == expected);
+            if !ok {
+                tracing::warn!(
+                    "cache signature verification failed for task '{task_name}' — rejecting entry"
+                );
+                return None;
+            }
+        }
+
+        (signed.result.task == task_name && signed.result.success).then_some(signed.result)
     }
 
     /// On a local miss, try the remote: download the action result and any
@@ -175,10 +232,8 @@ impl Cache {
             }
         };
 
-        let result = serde_json::from_slice::<ActionResult>(&ac_bytes).ok()?;
-        if result.task != task_name || !result.success {
-            return None;
-        }
+        // Verify the action result's signature before trusting any of it.
+        let result = self.extract_verified(&ac_bytes, task_name)?;
 
         // Ensure every referenced blob is present locally.
         for entry in &result.outputs {
@@ -188,6 +243,15 @@ impl Cache {
             }
             match remote.get_cas(&entry.blob).await {
                 Ok(Some(bytes)) => {
+                    // Blobs are content-addressed: a digest mismatch means the
+                    // remote served tampered or corrupt data — reject it.
+                    if blake3::hash(&bytes).to_hex().to_string() != entry.blob {
+                        tracing::warn!(
+                            "remote blob {} failed integrity check — rejecting entry",
+                            entry.blob
+                        );
+                        return None;
+                    }
                     if Self::write_atomic(&local, &bytes).is_err() {
                         return None;
                     }
@@ -228,16 +292,25 @@ impl Cache {
             outputs,
         };
 
-        let json = serde_json::to_string_pretty(&result).map_err(|e| YatrError::Cache {
-            message: format!("Failed to serialize action result: {e}"),
-        })?;
+        // Sign the canonical result, then wrap and store.
+        let result_bytes = serde_json::to_vec(&result).map_err(|e| Self::ser_err(&e))?;
+        let signed = SignedAc {
+            sig: self.sign(&result_bytes),
+            result,
+        };
+        let bytes = serde_json::to_vec_pretty(&signed).map_err(|e| Self::ser_err(&e))?;
 
-        Self::write_atomic(&self.ac_path(&key), json.as_bytes())?;
+        Self::write_atomic(&self.ac_path(&key), &bytes)?;
 
         // Write-through to the remote (non-fatal).
-        self.upload_to_remote(&key, &result, json.into_bytes())
-            .await;
+        self.upload_to_remote(&key, &signed.result, bytes).await;
         Ok(())
+    }
+
+    fn ser_err(e: &serde_json::Error) -> YatrError {
+        YatrError::Cache {
+            message: format!("Failed to serialize action result: {e}"),
+        }
     }
 
     /// Upload an action result and its blobs to the remote cache. Best-effort:
@@ -323,8 +396,8 @@ impl Cache {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if let Ok(result) = serde_json::from_str::<ActionResult>(&content) {
-                if result.task == task_name {
+            if let Ok(signed) = serde_json::from_str::<SignedAc>(&content) {
+                if signed.result.task == task_name {
                     std::fs::remove_file(&path)?;
                     removed += 1;
                 }
@@ -731,6 +804,7 @@ mod tests {
         crate::config::RemoteCacheConfig {
             url,
             token_env: None,
+            sign_key_env: None,
             read: true,
             write: true,
         }
@@ -749,17 +823,20 @@ mod tests {
         let key = Cache::compute_key("build", &config, work.path()).unwrap();
         let blob = blake3::hash(b"remote-bytes").to_hex().to_string();
 
-        let ac = ActionResult {
-            key: key.clone(),
-            task: "build".into(),
-            created_at: chrono::Utc::now(),
-            duration_ms: 0,
-            success: true,
-            stdout: "from-remote".into(),
-            outputs: vec![OutputEntry {
-                path: "out.txt".into(),
-                blob: blob.clone(),
-            }],
+        let ac = SignedAc {
+            sig: None,
+            result: ActionResult {
+                key: key.clone(),
+                task: "build".into(),
+                created_at: chrono::Utc::now(),
+                duration_ms: 0,
+                success: true,
+                stdout: "from-remote".into(),
+                outputs: vec![OutputEntry {
+                    path: "out.txt".into(),
+                    blob: blob.clone(),
+                }],
+            },
         };
         let ac_json = serde_json::to_vec(&ac).unwrap();
 
@@ -840,5 +917,101 @@ mod tests {
             .unwrap();
 
         // MockServer verifies the expected PUTs were received on drop.
+    }
+
+    #[tokio::test]
+    async fn test_signed_roundtrip() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let key = Cache::derive_key("super-secret");
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_signing_key(Some(key));
+
+        let config = task_with(&[], &[]);
+        cache
+            .put("t", &config, work.path(), "signed-output", Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(
+            cache.get("t", &config, work.path()).await.unwrap(),
+            Some("signed-output".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wrong_key_is_rejected() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let config = task_with(&[], &[]);
+
+        // Written under one key...
+        Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_signing_key(Some(Cache::derive_key("key-A")))
+            .put("t", &config, work.path(), "x", Duration::ZERO)
+            .await
+            .unwrap();
+
+        // ...is rejected when read under a different key (poisoning defence).
+        let reader = Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_signing_key(Some(Cache::derive_key("key-B")));
+        assert_eq!(reader.get("t", &config, work.path()).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_remote_blob_tampering_rejected() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+
+        let config = task_with(&[], &["out.txt"]);
+        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let blob = blake3::hash(b"genuine").to_hex().to_string();
+
+        let ac = SignedAc {
+            sig: None,
+            result: ActionResult {
+                key: key.clone(),
+                task: "build".into(),
+                created_at: chrono::Utc::now(),
+                duration_ms: 0,
+                success: true,
+                stdout: "x".into(),
+                outputs: vec![OutputEntry {
+                    path: "out.txt".into(),
+                    blob: blob.clone(),
+                }],
+            },
+        };
+        let ac_json = serde_json::to_vec(&ac).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path(format!("/ac/{key}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(ac_json))
+            .mount(&server)
+            .await;
+        // Remote serves bytes that do NOT match the advertised digest.
+        Mock::given(method("GET"))
+            .and(path(format!("/cas/{blob}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"TAMPERED".to_vec()))
+            .mount(&server)
+            .await;
+
+        let remote = RemoteCache::from_config(&remote_cfg(server.uri())).unwrap();
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_remote(Some(remote));
+
+        // Integrity check must reject the tampered blob → miss, nothing restored.
+        assert_eq!(
+            cache.get("build", &config, work.path()).await.unwrap(),
+            None
+        );
+        assert!(!work.path().join("out.txt").exists());
     }
 }

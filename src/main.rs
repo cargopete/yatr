@@ -194,11 +194,20 @@ async fn run_tasks(
     }
 
     let cache = if config.settings.cache && !dry_run {
-        let remote = match &config.settings.remote_cache {
+        let remote_cfg = config.settings.remote_cache.as_ref();
+        let remote = match remote_cfg {
             Some(rc) => Some(remote::RemoteCache::from_config(rc)?),
             None => None,
         };
-        Some(cache::Cache::new(config.settings.cache_dir.clone())?.with_remote(remote))
+        let signing_key = remote_cfg
+            .and_then(|rc| rc.sign_key_env.as_ref())
+            .and_then(|var| std::env::var(var).ok())
+            .map(|secret| cache::Cache::derive_key(&secret));
+        Some(
+            cache::Cache::new(config.settings.cache_dir.clone())?
+                .with_remote(remote)
+                .with_signing_key(signing_key),
+        )
     } else {
         None
     };

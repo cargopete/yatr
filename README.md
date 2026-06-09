@@ -264,6 +264,7 @@ against an off-the-shelf blob store or a tiny server.
 [settings.remote_cache]
 url = "https://cache.example.com/yatr"
 token_env = "YATR_CACHE_TOKEN"   # optional; bearer token read from this env var
+sign_key_env = "YATR_CACHE_KEY"  # optional; shared secret for signing (see below)
 read = true                      # pull from the remote on a local miss (default: true)
 write = true                     # push after a successful run (default: true)
 ```
@@ -271,7 +272,13 @@ write = true                     # push after a successful run (default: true)
 The cache is **content-addressed and machine-portable**: identical inputs produce
 identical keys regardless of checkout path. A flaky or unreachable remote is
 non-fatal — yatr logs a warning and runs the task locally. Keep secrets out of
-the committed config by using `token_env` rather than an inline token.
+the committed config by using the `*_env` options rather than inline values.
+
+**Integrity & signing.** Cached output blobs are verified against their content
+digests on download, so a tampered blob is rejected automatically. For defence
+against a compromised cache poisoning *action results*, set `sign_key_env` to a
+shared secret: yatr signs each action result with a keyed BLAKE3 MAC and rejects
+any entry whose signature doesn't verify under your key.
 
 ## Editor integration
 

@@ -96,13 +96,20 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
   auth sourced from an env var (no secrets in the committed file). Verified end-to-end against a
   filesystem-backed server and with `wiremock` integration tests.
 
+**Slice 2 (integrity & signing) shipped:**
+
+- [x] **CAS blob integrity** — downloaded blobs are verified against their content digest; a
+  digest mismatch (tampered/corrupt data) rejects the entry.
+- [x] **Action-result signing** — a keyed BLAKE3 MAC over each action result (secret from
+  `sign_key_env`), verified constant-time on read; entries that fail are rejected loudly. The
+  defence against the Nx CVE-2025-36852 "CREEP" poisoning class. No new crypto dependencies.
+
 **Remaining for v0.4:**
 
 - [ ] **REAPI interop**: SHA-256 digests + protobuf `ActionResult` so the cache plugs into
   off-the-shelf servers (bazel-remote first; BuildBuddy / NativeLink / Depot later). BLAKE3 stays
   the fast local default.
-- [ ] **HMAC artifact signing** + immutable entries + scoped read/write tokens to prevent cache
-  poisoning. (Heed Nx CVE-2025-36852 "CREEP" as the cautionary tale.)
+- [ ] Immutable entries + scoped read/write tokens (the rest of the poisoning hardening).
 
 ### v0.5+ — Scale & extensibility
 

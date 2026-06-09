@@ -51,6 +51,14 @@
           "default": true,
           "type": "boolean"
         },
+        "sign_key_env": {
+          "description": "Name of the environment variable holding a shared secret used to sign and verify cached action results (keyed BLAKE3 MAC). When set, entries that fail verification are rejected — protection against cache poisoning.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "token_env": {
           "description": "Name of the environment variable holding a bearer token, if auth is required. Keeps secrets out of the committed config file.",
           "default": null,

@@ -76,6 +76,12 @@ pub struct RemoteCacheConfig {
     #[serde(default)]
     pub token_env: Option<String>,
 
+    /// Name of the environment variable holding a shared secret used to sign
+    /// and verify cached action results (keyed BLAKE3 MAC). When set, entries
+    /// that fail verification are rejected — protection against cache poisoning.
+    #[serde(default)]
+    pub sign_key_env: Option<String>,
+
     /// Read from the remote cache on a local miss
     #[serde(default = "default_true")]
     pub read: bool,
