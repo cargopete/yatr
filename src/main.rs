@@ -29,6 +29,7 @@ mod config;
 mod error;
 mod executor;
 mod graph;
+mod remote;
 mod script;
 mod watch;
 
@@ -193,7 +194,11 @@ async fn run_tasks(
     }
 
     let cache = if config.settings.cache && !dry_run {
-        Some(cache::Cache::new(config.settings.cache_dir.clone())?)
+        let remote = match &config.settings.remote_cache {
+            Some(rc) => Some(remote::RemoteCache::from_config(rc)?),
+            None => None,
+        };
+        Some(cache::Cache::new(config.settings.cache_dir.clone())?.with_remote(remote))
     } else {
         None
     };

@@ -252,6 +252,27 @@ yatr run --json test         # Structured JSON: per-task results + summary
 yatr run --json --dry-run ci # JSON execution plan, without running
 ```
 
+## Shared (remote) cache
+
+Point yatr at a shared HTTP cache and a task built on one machine (or in CI) is
+restored on the next, instead of rebuilt. It speaks a small REST protocol —
+`GET`/`PUT`/`HEAD` on `<url>/ac/<key>` (action results) and `<url>/cas/<blob>`
+(content blobs) — the same path layout as Bazel's HTTP cache, so it works
+against an off-the-shelf blob store or a tiny server.
+
+```toml
+[settings.remote_cache]
+url = "https://cache.example.com/yatr"
+token_env = "YATR_CACHE_TOKEN"   # optional; bearer token read from this env var
+read = true                      # pull from the remote on a local miss (default: true)
+write = true                     # push after a successful run (default: true)
+```
+
+The cache is **content-addressed and machine-portable**: identical inputs produce
+identical keys regardless of checkout path. A flaky or unreachable remote is
+non-fatal — yatr logs a warning and runs the task locally. Keep secrets out of
+the committed config by using `token_env` rather than an inline token.
+
 ## Editor integration
 
 yatr ships a JSON Schema for `yatr.toml`, giving you autocomplete, hover docs,

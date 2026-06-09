@@ -57,6 +57,7 @@ pub mod config;
 pub mod error;
 pub mod executor;
 pub mod graph;
+pub mod remote;
 pub mod script;
 pub mod watch;
 
@@ -66,4 +67,5 @@ pub use config::Config;
 pub use error::{Result, YatrError};
 pub use executor::{Executor, ExecutorConfig, TaskResult};
 pub use graph::{ExecutionPlan, TaskGraph, TaskNode};
+pub use remote::RemoteCache;
 pub use script::ScriptEngine;

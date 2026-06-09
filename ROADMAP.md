@@ -84,14 +84,25 @@ file does not. Verified end-to-end against the binary.
 
 ### v0.4 — Remote cache (the headline) 🟢 strategic differentiator #1
 
-On top of the now-real local CAS:
+On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
 
-- **Bazel Remote Execution API, HTTP variant** (`/ac/` action cache + `/cas/` blob store) with
-  PUT / GET / HEAD, async writes, and transparent local→remote failover (Turborepo's model).
-- Interoperate with off-the-shelf servers (bazel-remote first; BuildBuddy / NativeLink / Depot later).
-- **HMAC artifact signing** + immutable entries + scoped read/write tokens to prevent cache
+- [x] HTTP cache with **`/ac/` + `/cas/` PUT/GET/HEAD** (Bazel's path layout), read-through on a
+  local miss and write-through after a run, with **transparent failover** — a flaky or absent
+  remote warns and the build continues, never errors.
+- [x] **Portable, content-addressed keys** — the cache key hashes the task's *relative* `cwd`
+  (not the absolute path), so entries are shareable across machines and CI checkouts. (This was a
+  real bug caught by a cross-machine end-to-end test; the unit tests alone missed it.)
+- [x] Config surface (`[settings.remote_cache]`: `url`, `token_env`, `read`, `write`) with bearer
+  auth sourced from an env var (no secrets in the committed file). Verified end-to-end against a
+  filesystem-backed server and with `wiremock` integration tests.
+
+**Remaining for v0.4:**
+
+- [ ] **REAPI interop**: SHA-256 digests + protobuf `ActionResult` so the cache plugs into
+  off-the-shelf servers (bazel-remote first; BuildBuddy / NativeLink / Depot later). BLAKE3 stays
+  the fast local default.
+- [ ] **HMAC artifact signing** + immutable entries + scoped read/write tokens to prevent cache
   poisoning. (Heed Nx CVE-2025-36852 "CREEP" as the cautionary tale.)
-- Use **SHA-256** keys for ecosystem interop here (BLAKE3 stays the fast local default).
 
 ### v0.5+ — Scale & extensibility
 

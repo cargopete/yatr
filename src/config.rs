@@ -53,6 +53,36 @@ pub struct Settings {
     /// Watch debounce delay in milliseconds
     #[serde(default = "default_debounce")]
     pub watch_debounce_ms: u64,
+
+    /// Optional shared/remote cache backend
+    #[serde(default)]
+    pub remote_cache: Option<RemoteCacheConfig>,
+}
+
+/// Configuration for a shared HTTP remote cache.
+///
+/// The cache speaks a simple REST protocol — `GET`/`PUT`/`HEAD` on
+/// `<url>/ac/<key>` (action results) and `<url>/cas/<blob>` (content blobs) —
+/// so it works against a plain object store or a small server, and shares the
+/// path layout used by Bazel's HTTP cache.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteCacheConfig {
+    /// Base URL of the remote cache (e.g. `https://cache.example.com/yatr`)
+    pub url: String,
+
+    /// Name of the environment variable holding a bearer token, if auth is
+    /// required. Keeps secrets out of the committed config file.
+    #[serde(default)]
+    pub token_env: Option<String>,
+
+    /// Read from the remote cache on a local miss
+    #[serde(default = "default_true")]
+    pub read: bool,
+
+    /// Write to the remote cache after a successful run
+    #[serde(default = "default_true")]
+    pub write: bool,
 }
 
 const fn default_true() -> bool {

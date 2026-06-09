@@ -18,6 +18,7 @@
         "cache": false,
         "cache_dir": null,
         "parallelism": 0,
+        "remote_cache": null,
         "shell": null,
         "watch_debounce_ms": 0
       },
@@ -38,6 +39,38 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "RemoteCacheConfig": {
+      "description": "Configuration for a shared HTTP remote cache.\n\nThe cache speaks a simple REST protocol — `GET`/`PUT`/`HEAD` on `<url>/ac/<key>` (action results) and `<url>/cas/<blob>` (content blobs) — so it works against a plain object store or a small server, and shares the path layout used by Bazel's HTTP cache.",
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "read": {
+          "description": "Read from the remote cache on a local miss",
+          "default": true,
+          "type": "boolean"
+        },
+        "token_env": {
+          "description": "Name of the environment variable holding a bearer token, if auth is required. Keeps secrets out of the committed config file.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Base URL of the remote cache (e.g. `https://cache.example.com/yatr`)",
+          "type": "string"
+        },
+        "write": {
+          "description": "Write to the remote cache after a successful run",
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Settings": {
       "description": "Global settings for YATR behavior",
       "type": "object",
@@ -61,6 +94,18 @@
           "type": "integer",
           "format": "uint",
           "minimum": 0.0
+        },
+        "remote_cache": {
+          "description": "Optional shared/remote cache backend",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RemoteCacheConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "shell": {
           "description": "Default shell to use (if shell mode enabled)",

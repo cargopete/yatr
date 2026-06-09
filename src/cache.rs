@@ -30,6 +30,7 @@ use walkdir::WalkDir;
 
 use crate::config::TaskConfig;
 use crate::error::{Result, YatrError};
+use crate::remote::RemoteCache;
 
 /// A single cached output file: its path relative to the task's working
 /// directory, and the BLAKE3 digest of its contents in the CAS.
@@ -65,6 +66,8 @@ pub struct Cache {
     dir: PathBuf,
     /// Whether caching is enabled
     enabled: bool,
+    /// Optional shared/remote backend
+    remote: Option<RemoteCache>,
 }
 
 impl Cache {
@@ -80,7 +83,18 @@ impl Cache {
         std::fs::create_dir_all(dir.join("ac"))?;
         std::fs::create_dir_all(dir.join("cas"))?;
 
-        Ok(Self { dir, enabled: true })
+        Ok(Self {
+            dir,
+            enabled: true,
+            remote: None,
+        })
+    }
+
+    /// Attach an optional remote backend (builder style).
+    #[must_use]
+    pub fn with_remote(mut self, remote: Option<RemoteCache>) -> Self {
+        self.remote = remote;
+        self
     }
 
     /// Create a disabled cache (no-op)
@@ -89,6 +103,7 @@ impl Cache {
         Self {
             dir: PathBuf::new(),
             enabled: false,
+            remote: None,
         }
     }
 
@@ -103,8 +118,6 @@ impl Cache {
     /// Returns `None` (a miss) when there is no entry, the entry is for a
     /// different task, or any recorded output blob is missing — in which case
     /// the caller should run the task for real.
-    // Async by design: a remote (REAPI) backend will perform network I/O here.
-    #[allow(clippy::unused_async)]
     pub async fn get(
         &self,
         task_name: &str,
@@ -116,20 +129,18 @@ impl Cache {
         }
 
         let key = Self::compute_key(task_name, config, cwd)?;
-        let ac_path = self.ac_path(&key);
-        if !ac_path.exists() {
-            return Ok(None);
-        }
 
-        let content = std::fs::read_to_string(&ac_path)?;
-        let Ok(result) = serde_json::from_str::<ActionResult>(&content) else {
-            // Unreadable / stale-format entry: treat as a miss.
-            return Ok(None);
+        // Local action cache first.
+        let result = if let Some(result) = self.load_local_ac(&key, task_name) {
+            Some(result)
+        } else {
+            // Local miss: try the remote, populating the local cache on a hit.
+            self.fetch_from_remote(&key, task_name).await
         };
 
-        if result.task != task_name || !result.success {
+        let Some(result) = result else {
             return Ok(None);
-        }
+        };
 
         // Restore declared outputs. If any blob is missing, the cache is
         // incomplete: fall through to a real run rather than lie.
@@ -140,9 +151,58 @@ impl Cache {
         Ok(Some(result.stdout))
     }
 
+    /// Load and validate a local action-cache entry for `key`.
+    fn load_local_ac(&self, key: &str, task_name: &str) -> Option<ActionResult> {
+        let content = std::fs::read_to_string(self.ac_path(key)).ok()?;
+        let result = serde_json::from_str::<ActionResult>(&content).ok()?;
+        (result.task == task_name && result.success).then_some(result)
+    }
+
+    /// On a local miss, try the remote: download the action result and any
+    /// referenced blobs into the local store. Remote failures are non-fatal —
+    /// they degrade to a miss, never an error.
+    async fn fetch_from_remote(&self, key: &str, task_name: &str) -> Option<ActionResult> {
+        let remote = self.remote.as_ref()?;
+        if !remote.read {
+            return None;
+        }
+
+        let ac_bytes = match remote.get_ac(key).await {
+            Ok(bytes) => bytes?,
+            Err(e) => {
+                tracing::warn!("remote cache read failed for {key}: {e}");
+                return None;
+            }
+        };
+
+        let result = serde_json::from_slice::<ActionResult>(&ac_bytes).ok()?;
+        if result.task != task_name || !result.success {
+            return None;
+        }
+
+        // Ensure every referenced blob is present locally.
+        for entry in &result.outputs {
+            let local = self.cas_path(&entry.blob);
+            if local.exists() {
+                continue;
+            }
+            match remote.get_cas(&entry.blob).await {
+                Ok(Some(bytes)) => {
+                    if Self::write_atomic(&local, &bytes).is_err() {
+                        return None;
+                    }
+                }
+                // Missing blob or transport error → unusable entry.
+                Ok(None) | Err(_) => return None,
+            }
+        }
+
+        // Persist the action result locally for next time.
+        Self::write_atomic(&self.ac_path(key), &ac_bytes).ok()?;
+        Some(result)
+    }
+
     /// Store a successful task result, capturing its declared outputs.
-    // Async by design: a remote (REAPI) backend will perform network I/O here.
-    #[allow(clippy::unused_async)]
     pub async fn put(
         &self,
         task_name: &str,
@@ -172,7 +232,41 @@ impl Cache {
             message: format!("Failed to serialize action result: {e}"),
         })?;
 
-        Self::write_atomic(&self.ac_path(&key), json.as_bytes())
+        Self::write_atomic(&self.ac_path(&key), json.as_bytes())?;
+
+        // Write-through to the remote (non-fatal).
+        self.upload_to_remote(&key, &result, json.into_bytes())
+            .await;
+        Ok(())
+    }
+
+    /// Upload an action result and its blobs to the remote cache. Best-effort:
+    /// any failure is logged and swallowed so it can't break the build.
+    async fn upload_to_remote(&self, key: &str, result: &ActionResult, ac_bytes: Vec<u8>) {
+        let Some(remote) = self.remote.as_ref() else {
+            return;
+        };
+        if !remote.write {
+            return;
+        }
+
+        for entry in &result.outputs {
+            // Skip blobs the remote already has.
+            if remote.has_cas(&entry.blob).await.unwrap_or(false) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(self.cas_path(&entry.blob)) else {
+                continue;
+            };
+            if let Err(e) = remote.put_cas(&entry.blob, bytes).await {
+                tracing::warn!("remote cache blob upload failed for {}: {e}", entry.blob);
+                return; // don't publish an action result with missing blobs
+            }
+        }
+
+        if let Err(e) = remote.put_ac(key, ac_bytes).await {
+            tracing::warn!("remote cache action upload failed for {key}: {e}");
+        }
     }
 
     /// Invalidate the cached entry for a specific task + input combination.
@@ -286,8 +380,13 @@ impl Cache {
             hasher.update(script.as_bytes());
         }
 
-        // Working directory and shell mode change command semantics.
-        hasher.update(cwd.to_string_lossy().as_bytes());
+        // The task's *declared* (relative) working directory and shell mode
+        // change command semantics. We deliberately hash the relative `cwd`
+        // rather than the absolute one so keys are portable across machines —
+        // a prerequisite for a shared remote cache.
+        if let Some(rel) = &config.cwd {
+            hasher.update(rel.to_string_lossy().as_bytes());
+        }
         hasher.update(&[u8::from(config.shell.unwrap_or(false))]);
 
         // Environment variables (sorted for stability).
@@ -445,9 +544,14 @@ impl Cache {
     }
 
     /// Write a file atomically via a temp file + rename, so concurrent tasks
-    /// never observe a half-written blob or action result.
+    /// never observe a half-written blob or action result. The temp name is
+    /// unique per call (pid + counter) so concurrent writers of the same target
+    /// don't collide on the temp file.
     fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
-        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("tmp.{}.{n}", std::process::id()));
         std::fs::write(&tmp, content)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
@@ -621,5 +725,120 @@ mod tests {
             cache.get("b", &config, work.path()).await.unwrap(),
             Some("y".to_string())
         );
+    }
+
+    fn remote_cfg(url: String) -> crate::config::RemoteCacheConfig {
+        crate::config::RemoteCacheConfig {
+            url,
+            token_env: None,
+            read: true,
+            write: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remote_read_through_populates_local() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+
+        let config = task_with(&[], &["out.txt"]);
+        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let blob = blake3::hash(b"remote-bytes").to_hex().to_string();
+
+        let ac = ActionResult {
+            key: key.clone(),
+            task: "build".into(),
+            created_at: chrono::Utc::now(),
+            duration_ms: 0,
+            success: true,
+            stdout: "from-remote".into(),
+            outputs: vec![OutputEntry {
+                path: "out.txt".into(),
+                blob: blob.clone(),
+            }],
+        };
+        let ac_json = serde_json::to_vec(&ac).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path(format!("/ac/{key}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(ac_json))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/cas/{blob}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"remote-bytes".to_vec()))
+            .mount(&server)
+            .await;
+
+        let remote = RemoteCache::from_config(&remote_cfg(server.uri())).unwrap();
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_remote(Some(remote));
+
+        // Local is empty; the hit must come from the remote and restore the output.
+        let out = cache.get("build", &config, work.path()).await.unwrap();
+        assert_eq!(out, Some("from-remote".to_string()));
+        assert_eq!(
+            std::fs::read(work.path().join("out.txt")).unwrap(),
+            b"remote-bytes"
+        );
+        // And the action result is now cached locally for next time.
+        assert!(cache.ac_path(&key).exists());
+    }
+
+    #[tokio::test]
+    async fn test_remote_write_through_uploads() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+
+        std::fs::write(work.path().join("artifact.bin"), b"payload").unwrap();
+        let config = task_with(&[], &["artifact.bin"]);
+        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let blob = blake3::hash(b"payload").to_hex().to_string();
+
+        // Remote doesn't have the blob yet → expect an upload of blob + action.
+        Mock::given(method("HEAD"))
+            .and(path(format!("/cas/{blob}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(format!("/cas/{blob}")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(format!("/ac/{key}")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let remote = RemoteCache::from_config(&remote_cfg(server.uri())).unwrap();
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf()))
+            .unwrap()
+            .with_remote(Some(remote));
+
+        cache
+            .put(
+                "build",
+                &config,
+                work.path(),
+                "out",
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+
+        // MockServer verifies the expected PUTs were received on drop.
     }
 }
