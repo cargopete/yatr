@@ -32,6 +32,7 @@ mod executor;
 mod graph;
 mod remote;
 mod script;
+mod toolchain;
 mod wasm;
 mod watch;
 
@@ -298,8 +299,24 @@ struct RunOpts {
 }
 
 async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
-    let (config, _) = Config::load(cli.config.as_deref())?;
+    let (mut config, _) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
+
+    // Ensure pinned toolchains are installed and put them on the task PATH.
+    if !config.toolchain.is_empty() && !opts.dry_run {
+        let bins = toolchain::ensure_all(&config.toolchain, &toolchain::toolchains_dir()).await?;
+        if !bins.is_empty() {
+            let mut paths = bins;
+            if let Some(existing) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&existing));
+            }
+            if let Ok(joined) = std::env::join_paths(&paths) {
+                config
+                    .env
+                    .insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+            }
+        }
+    }
 
     // --affected: keep only the requested tasks that changes since the ref touch.
     let filtered: Vec<String>;

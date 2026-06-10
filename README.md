@@ -348,6 +348,26 @@ cargo build --release --target wasm32-unknown-unknown
 
 Then point a task at the resulting `.wasm`. See the crate's README for the full API.
 
+## Toolchains (no more "works on my machine")
+
+Pin a language runtime and yatr downloads it once and puts it on the task `PATH` —
+a fresh checkout runs green with no manual installs:
+
+```toml
+[toolchain.node]
+version = "20.11.0"
+url = "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.tar.gz"
+bin = "node-v{version}-{os}-{arch}/bin"
+
+[tasks.build]
+run = ["node build.js"]   # uses the pinned node, wherever yatr runs
+```
+
+`{version}`, `{os}` (`linux`/`darwin`/`win`) and `{arch}` (`x64`/`arm64`) are
+substituted into the templates. Toolchains are cached under a local toolchains dir
+(override with `YATR_TOOLCHAIN_DIR`) and installed once. `.tar.gz` archives are
+supported today (zip is on the roadmap).
+
 ## Splitting config across files
 
 Large repos can keep task definitions next to the code they build and compose

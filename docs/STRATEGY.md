@@ -71,8 +71,8 @@ built yet.
 
 ### Tier 1 — Close the gap, prove the claims (do first)
 - **Toolchain pinning** (`[toolchain]`): pin + auto-download language runtimes,
-  inject into task PATH. Generic archive-based installer (tar.gz/zip), mock-server
-  verifiable. *The headline feature gap.*
+  inject into task PATH. ✅ **Shipped** (generic `.tar.gz` installer, templated
+  URLs, verified end-to-end). Remaining: zip archives + built-in tool presets.
 - **Benchmarks**: a reproducible suite vs make/just/task (+ moon where comparable),
   committed and documented. Turns "fast" from a claim into a number.
 - **Publish to crates.io** (yatr + yatr-plugin) — already publish-ready; unblocks

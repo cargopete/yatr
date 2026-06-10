@@ -137,8 +137,10 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
     asset and reuses the remote download/cache path.
   - [ ] More plugin roles: custom task runners, cache-key contributors, toolchain providers,
     output reporters.
-- **Toolchain management / pinning** — the single biggest _polyglot_ gap. A `[toolchain]`
-  section that pins + auto-downloads language runtimes, or deep integration with mise / proto.
+- [x] **Toolchain management / pinning** — the single biggest _polyglot_ gap. A `[toolchain]`
+  section pins + auto-downloads language runtimes (templated `url` with `{version}/{os}/{arch}`,
+  `.tar.gz`) and prepends their `bin` to the task `PATH`. Verified end-to-end. (Remaining: zip
+  archives, built-in presets for common tools.)
 - **gRPC REAPI cache** with `GetCapabilities` digest negotiation (broader server compatibility).
 
 ### v1.0+ — Frontier

@@ -43,6 +43,14 @@
       "additionalProperties": {
         "$ref": "#/definitions/TaskConfig"
       }
+    },
+    "toolchain": {
+      "description": "Pinned language toolchains, auto-downloaded and put on task `PATH`.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/ToolchainConfig"
+      }
     }
   },
   "additionalProperties": false,
@@ -262,6 +270,33 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolchainConfig": {
+      "description": "A pinned, auto-downloaded language toolchain.\n\nThe `url` (and optional `bin`) are templates where `{version}`, `{os}`, and `{arch}` are substituted. `{os}` is `linux`/`darwin`/`win`; `{arch}` is `x64`/`arm64` (matching the common Node-style naming).",
+      "type": "object",
+      "required": [
+        "url",
+        "version"
+      ],
+      "properties": {
+        "bin": {
+          "description": "Subdirectory within the extracted archive to add to `PATH` (template; defaults to the archive root).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Download URL template for the archive (currently `.tar.gz`/`.tgz`).",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version to install (substituted for `{version}`).",
+          "type": "string"
         }
       },
       "additionalProperties": false

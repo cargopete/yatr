@@ -31,9 +31,33 @@ pub struct Config {
     #[serde(default)]
     pub tasks: HashMap<String, TaskConfig>,
 
+    /// Pinned language toolchains, auto-downloaded and put on task `PATH`.
+    #[serde(default)]
+    pub toolchain: HashMap<String, ToolchainConfig>,
+
     /// Global settings
     #[serde(default)]
     pub settings: Settings,
+}
+
+/// A pinned, auto-downloaded language toolchain.
+///
+/// The `url` (and optional `bin`) are templates where `{version}`, `{os}`, and
+/// `{arch}` are substituted. `{os}` is `linux`/`darwin`/`win`; `{arch}` is
+/// `x64`/`arm64` (matching the common Node-style naming).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolchainConfig {
+    /// Version to install (substituted for `{version}`).
+    pub version: String,
+
+    /// Download URL template for the archive (currently `.tar.gz`/`.tgz`).
+    pub url: String,
+
+    /// Subdirectory within the extracted archive to add to `PATH`
+    /// (template; defaults to the archive root).
+    #[serde(default)]
+    pub bin: Option<String>,
 }
 
 /// Global settings for YATR behavior

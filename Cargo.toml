@@ -44,6 +44,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # WASM plugin runtime (lightweight pure-Rust interpreter)
 wasmi = "1"
 
+# Toolchain management (download + extract pinned language runtimes)
+flate2 = "1"             # gzip decoding for .tar.gz toolchain archives
+tar = "0.4"              # tar extraction
+
 # Process execution
 which = "8"
 
