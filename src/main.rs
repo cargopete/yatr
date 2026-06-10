@@ -70,7 +70,9 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{}: {:?}", style("error").red().bold(), e);
+            // Render via miette for a clean message + diagnostic code/help,
+            // rather than the raw `{:?}` struct debug.
+            eprintln!("{:?}", miette::Report::new(e));
             ExitCode::FAILURE
         }
     }

@@ -23,14 +23,15 @@ pub fn changed_files(git_ref: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "--relative", git_ref])
         .output()
-        .map_err(|e| YatrError::Cache {
-            message: format!("failed to run git: {e}"),
+        .map_err(|e| YatrError::Affected {
+            message: format!("failed to run git (is it installed?): {e}"),
         })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(YatrError::Cache {
-            message: format!("git diff failed: {}", stderr.trim()),
+        let first = stderr.lines().next().unwrap_or("git diff failed").trim();
+        return Err(YatrError::Affected {
+            message: format!("could not determine changes since '{git_ref}': {first}"),
         });
     }
 

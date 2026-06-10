@@ -81,6 +81,10 @@ pub enum YatrError {
     #[diagnostic(code(yatr::toolchain))]
     Toolchain { tool: String, message: String },
 
+    #[error("{message}")]
+    #[diagnostic(code(yatr::affected))]
+    Affected { message: String },
+
     #[error("I/O error")]
     #[diagnostic(code(yatr::io))]
     Io(#[from] std::io::Error),
