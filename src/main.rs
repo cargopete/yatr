@@ -30,6 +30,7 @@ mod config;
 mod error;
 mod executor;
 mod graph;
+mod lsp;
 mod remote;
 mod script;
 mod toolchain;
@@ -168,6 +169,9 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
         }
 
         Commands::Affected { git_ref, format } => run_affected_command(git_ref, format, cli),
+
+        // The LSP runs a synchronous stdio loop; keep it off the async executor.
+        Commands::Lsp => tokio::task::block_in_place(lsp::run),
     }
 }
 

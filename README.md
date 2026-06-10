@@ -442,6 +442,18 @@ or associate it globally in VS Code settings:
 "evenBetterToml.schema.associations": { "yatr\\.toml$": "./yatr.schema.json" }
 ```
 
+### Language server
+
+`yatr lsp` runs a language server over stdio, giving any LSP-capable editor live
+**diagnostics** (parse + validation errors, missing dependencies, cycles — as you
+type) and a **task outline**. Point your editor's LSP client at `yatr lsp` for
+`yatr.toml`. For example, in Neovim:
+
+```lua
+vim.lsp.start({ name = "yatr", cmd = { "yatr", "lsp" },
+                root_dir = vim.fn.getcwd() })
+```
+
 ## Showcases
 
 Real-world projects using yatr in production:

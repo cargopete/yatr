@@ -293,7 +293,7 @@ impl Config {
     }
 
     /// Validate the configuration
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (name, task) in &self.tasks {
             // Task must have one of `run`, `script`, `wasm`, or dependencies
             let has_run = !task.run.is_empty();

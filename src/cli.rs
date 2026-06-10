@@ -131,6 +131,9 @@ pub enum Commands {
     /// Print the JSON Schema for yatr.toml (for editor validation/autocomplete)
     Schema,
 
+    /// Run the yatr.toml language server (LSP over stdio)
+    Lsp,
+
     /// List tasks affected by changes since a git ref
     Affected {
         /// Git ref to compare against (e.g. `main`, `HEAD~1`, `origin/main...HEAD`)

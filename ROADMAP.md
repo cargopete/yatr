@@ -151,7 +151,8 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
 - **Graduated hermeticity:** opt-in sandbox (declared inputs only) building on the IO-tracing
   work; reproducibility verification (`SOURCE_DATE_EPOCH`, diff re-runs).
 - **Partial / incremental caching** within large tasks — avoid moon's all-or-nothing pain.
-- **LSP** for `yatr.toml` (go-to-task, hover docs, diagnostics).
+- [x] **LSP** for `yatr.toml` — `yatr lsp` gives live diagnostics + a task outline.
+  (Remaining: hover docs, go-to-definition, completion.)
 - **Language presets** (cargo / npm / go / uv / docker) shipped as WASM plugins — dogfooding the
   plugin system.
 - Optional **remote execution** — only if user demand justifies leaving the runner niche.

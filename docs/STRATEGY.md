@@ -83,7 +83,9 @@ built yet.
 - **IO-tracing / graduated hermeticity**: ✅ **Shipped (writes)** — `--trace-io`
   warns when a task writes outside its declared `outputs` (the #1 silent cache
   bug). Remaining: read-tracing (needs OS syscall tooling) + opt-in sandbox mode.
-- **LSP for `yatr.toml`**: go-to-task, hover docs, diagnostics, dependency lenses.
+- **LSP for `yatr.toml`**: ✅ **Shipped (slice 1)** — `yatr lsp` gives live
+  diagnostics (parse/validation/missing-dep/cycle) + a task outline. Remaining:
+  hover docs, go-to-definition on dependencies, completion.
 - **Docs site + cookbook**: real-world recipes (Rust+JS+Docker, CI patterns,
   plugins), beyond the single Boutique Bouquet showcase.
 
