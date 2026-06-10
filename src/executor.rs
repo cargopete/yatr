@@ -3,7 +3,7 @@
 //! Handles running commands, managing parallel execution, and coordinating
 //! with the cache and scripting systems.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::cache::Cache;
 use crate::config::Config;
@@ -95,10 +96,10 @@ impl Executor {
     /// Execute tasks according to the execution plan
     pub async fn execute(&self, graph: &TaskGraph, task_name: &str) -> Result<Vec<TaskResult>> {
         let tasks = graph.execution_order(task_name)?;
-        let plan = ExecutionPlan::from_tasks(tasks, graph);
 
         if self.exec_config.dry_run {
             if !self.exec_config.json {
+                let plan = ExecutionPlan::from_tasks(tasks, graph);
                 self.print_dry_run(&plan);
             }
             return Ok(Vec::new());
@@ -112,82 +113,89 @@ impl Executor {
 
         let semaphore = Arc::new(Semaphore::new(parallelism));
         let multi_progress = MultiProgress::new();
-        let mut all_results = Vec::new();
 
-        // Execute groups sequentially, tasks within groups in parallel
-        for group in &plan.parallel_groups {
-            let mut handles = Vec::new();
+        // Ready-queue scheduling: a task starts the moment all of its
+        // dependencies have completed, rather than waiting for its whole
+        // dependency "level" — better wall-clock when task durations are uneven.
+        let (node_map, mut in_degree, dependents) = Self::build_dag(&tasks, graph);
 
-            for task in group {
-                let task_clone = (*task).clone();
-                let config = Arc::clone(&self.config);
-                let sem = Arc::clone(&semaphore);
-                let exec_config = self.exec_config.clone();
-                let cache = self.cache.clone();
-                let mp = multi_progress.clone();
+        // Build the future that runs one task, gated by the concurrency semaphore.
+        let spawn_one = |name: &str| {
+            let task = node_map[name].clone();
+            let config = Arc::clone(&self.config);
+            let sem = Arc::clone(&semaphore);
+            let exec_config = self.exec_config.clone();
+            let cache = self.cache.clone();
+            let mp = multi_progress.clone();
+            async move {
+                let _permit = sem.acquire().await.map_err(|e| {
+                    YatrError::Io(std::io::Error::other(format!(
+                        "Semaphore acquire failed: {e}"
+                    )))
+                })?;
 
-                let handle = tokio::spawn(async move {
-                    let _permit = match sem.acquire().await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return Err(YatrError::Io(std::io::Error::other(format!(
-                                "Semaphore acquire failed: {e}"
-                            ))))
-                        }
-                    };
-
-                    // Progress spinner is human-only; suppress it in JSON mode.
-                    let pb = (!exec_config.json).then(|| {
-                        let pb = mp.add(ProgressBar::new_spinner());
-                        let style = ProgressStyle::default_spinner()
-                            .template("{spinner:.cyan} {msg}")
-                            .unwrap_or_else(|_| ProgressStyle::default_spinner());
-                        pb.set_style(style);
-                        pb.set_message(format!("Running {}", task_clone.name));
-                        pb.enable_steady_tick(Duration::from_millis(100));
-                        pb
-                    });
-
-                    let result = Self::execute_single_task(
-                        &task_clone,
-                        &config,
-                        &exec_config,
-                        cache.as_ref(),
-                    )
-                    .await;
-
-                    if let Some(pb) = pb {
-                        pb.finish_and_clear();
-                    }
-                    result
+                // Progress spinner is human-only; suppress it in JSON mode.
+                let pb = (!exec_config.json).then(|| {
+                    let pb = mp.add(ProgressBar::new_spinner());
+                    let style = ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                    pb.set_style(style);
+                    pb.set_message(format!("Running {}", task.name));
+                    pb.enable_steady_tick(Duration::from_millis(100));
+                    pb
                 });
 
-                handles.push(handle);
+                let result =
+                    Self::execute_single_task(&task, &config, &exec_config, cache.as_ref()).await;
+
+                if let Some(pb) = pb {
+                    pb.finish_and_clear();
+                }
+                result
+            }
+        };
+
+        let mut running = JoinSet::new();
+        for name in node_map.keys() {
+            if in_degree[name] == 0 {
+                running.spawn(spawn_one(name));
+            }
+        }
+
+        let mut all_results = Vec::new();
+        while let Some(joined) = running.join_next().await {
+            let result =
+                joined.map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
+
+            let success = result.success;
+            let finished = result.name.clone();
+            let allow_failure = graph
+                .get_task(&finished)
+                .is_some_and(|t| t.config.allow_failure);
+
+            if !self.exec_config.json {
+                Self::print_task_result(&result);
+            }
+            all_results.push(result);
+
+            if !success && !allow_failure {
+                return Err(YatrError::TaskFailed {
+                    task: finished,
+                    code: 1,
+                    stderr: None,
+                });
             }
 
-            // Wait for all tasks in this group
-            for handle in handles {
-                let result = handle
-                    .await
-                    .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
-
-                let success = result.success;
-                let task_name = result.name.clone();
-                let allow_failure = graph
-                    .get_task(&task_name)
-                    .is_some_and(|t| t.config.allow_failure);
-
-                if !self.exec_config.json {
-                    Self::print_task_result(&result);
-                }
-                all_results.push(result);
-
-                if !success && !allow_failure {
-                    return Err(YatrError::TaskFailed {
-                        task: task_name,
-                        code: 1,
-                        stderr: None,
-                    });
+            // Unblock dependents whose final dependency just completed.
+            if let Some(deps) = dependents.get(&finished) {
+                for d in deps {
+                    if let Some(remaining) = in_degree.get_mut(d) {
+                        *remaining -= 1;
+                        if *remaining == 0 {
+                            running.spawn(spawn_one(d));
+                        }
+                    }
                 }
             }
         }
@@ -196,6 +204,41 @@ impl Executor {
             self.print_summary(&all_results);
         }
         Ok(all_results)
+    }
+
+    /// Build the dependency bookkeeping for the ready-queue scheduler:
+    /// name → task node, name → outstanding dependency count, and
+    /// name → tasks that depend on it (all scoped to the tasks being run).
+    #[allow(clippy::type_complexity)]
+    fn build_dag(
+        tasks: &[&TaskNode],
+        graph: &TaskGraph,
+    ) -> (
+        HashMap<String, TaskNode>,
+        HashMap<String, usize>,
+        HashMap<String, Vec<String>>,
+    ) {
+        let in_set: HashSet<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let node_map: HashMap<String, TaskNode> = tasks
+            .iter()
+            .map(|t| (t.name.clone(), (*t).clone()))
+            .collect();
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        for task in tasks {
+            let deps: Vec<String> = graph
+                .dependencies(&task.name)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|d| in_set.contains(d))
+                .map(String::from)
+                .collect();
+            in_degree.insert(task.name.clone(), deps.len());
+            for d in deps {
+                dependents.entry(d).or_default().push(task.name.clone());
+            }
+        }
+        (node_map, in_degree, dependents)
     }
 
     /// Execute a single task
@@ -668,5 +711,40 @@ mod tests {
     fn test_parse_command_with_quotes() {
         let parts = Executor::parse_command(r#"echo "hello world""#, false);
         assert_eq!(parts, vec!["echo", "hello world"]);
+    }
+
+    #[tokio::test]
+    async fn ready_queue_runs_full_diamond_dag() {
+        // a → {b, c} → d. All four must run, each after its dependencies.
+        let toml = r#"
+            [tasks.a]
+            run = ["true"]
+            [tasks.b]
+            depends = ["a"]
+            run = ["true"]
+            [tasks.c]
+            depends = ["a"]
+            run = ["true"]
+            [tasks.d]
+            depends = ["b", "c"]
+            run = ["true"]
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let graph = TaskGraph::from_config(&config).unwrap();
+        let exec_config = ExecutorConfig {
+            json: true, // suppress human output in tests
+            ..Default::default()
+        };
+        let executor = Executor::new(config, exec_config, None);
+
+        let results = executor.execute(&graph, "d").await.unwrap();
+        let names: HashSet<&str> = results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["a", "b", "c", "d"]));
+        assert!(results.iter().all(|r| r.success));
+
+        // d must complete after both b and c started no earlier than a finished:
+        // verify d is the last to start (largest start_offset).
+        let latest = results.iter().max_by_key(|r| r.start_offset).unwrap();
+        assert_eq!(latest.name, "d");
     }
 }

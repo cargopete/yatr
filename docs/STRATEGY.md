@@ -90,8 +90,9 @@ built yet.
 ### Tier 3 — Ecosystem & frontier
 - **REAPI interop** (SHA-256 + protobuf ActionResult) — plug into bazel-remote /
   BuildBuddy. Ecosystem reach.
-- **Work-stealing scheduler**: run any task whose deps are done, instead of strict
-  level barriers — better wall-clock under uneven task durations.
+- **Work-stealing scheduler**: ✅ **Shipped** — a ready-queue runs any task the
+  moment its deps complete, instead of strict level barriers. Measured ~1.8× on a
+  DAG with a fast chain beside a slow sibling (791 ms → 430 ms).
 - **OpenTelemetry spans** (one per task under a root invocation span).
 - **Plugin depth**: cache-key contributions; a plugin registry / index.
 

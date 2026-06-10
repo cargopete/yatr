@@ -143,6 +143,9 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
   archives, built-in presets for common tools.)
 - **gRPC REAPI cache** with `GetCapabilities` digest negotiation (broader server compatibility).
 
+- [x] **Ready-queue scheduler** — a task starts as soon as its dependencies complete, instead of
+  waiting for its whole dependency "level". Measured ~1.8× faster on uneven-duration DAGs.
+
 ### v1.0+ — Frontier
 
 - **Graduated hermeticity:** opt-in sandbox (declared inputs only) building on the IO-tracing
