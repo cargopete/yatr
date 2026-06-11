@@ -1,6 +1,6 @@
 # yatr Roadmap
 
-> Status: draft for review. Reflects the codebase as of v0.1.2 (June 2026).
+> Status: living document. Reflects the codebase as of v1.0.0 (June 2026).
 
 ## Positioning
 
@@ -170,8 +170,8 @@ On top of the now-real local CAS. **Slice 1 (yatr-native protocol) shipped:**
 
 ## Caveats
 
-- This roadmap is an architecture-and-capabilities plan, not an adoption plan. yatr is
-  early-stage (v0.1.2).
+- This roadmap is an architecture-and-capabilities plan, not an adoption plan. yatr reached
+  v1.0.0 (June 2026): the `yatr.toml` schema and CLI surface are now stable under semver.
 - Competitor specifics evolve quickly; versions cited are snapshots as of June 2026 (moon v1.32
   HTTP remote cache, Feb 2026; Nx self-hosted cache deprecation, May 2026; Earthly in maintenance
   mode; Turborepo v2.x).

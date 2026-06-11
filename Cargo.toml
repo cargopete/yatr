@@ -3,7 +3,7 @@ members = ["crates/yatr-plugin"]
 
 [package]
 name = "yatr"
-version = "0.7.2"
+version = "1.0.0"
 edition = "2021"
 authors = ["Pete"]
 description = "Yet Another Task Runner - a fast, polyglot, single-binary task runner with a content-addressed, shareable cache"
