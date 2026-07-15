@@ -4,6 +4,24 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-07-15
+
+### Added
+
+- **Toolchain archive verification** — a `[toolchain]` entry now accepts an
+  optional `sha256`. When set, the downloaded archive is verified against the
+  digest **before extraction**; a mismatch aborts the install and leaves nothing
+  on disk (no install marker), so a re-tagged URL or a tampered mirror can't reach
+  your filesystem. Existing configs without a digest are unaffected. This is a
+  backward-compatible new key, per the 1.0 stability promise.
+
+### Changed
+
+- Documented the toolchain fetch failure model (bad URL / 404 / unsupported
+  archive → hard failure, never a silent fallback to the system `PATH`).
+- Fairer comparison table: cargo-make is now ⚠️ (not ❌) on toolchain management
+  and ✅ on watch mode, with footnotes explaining the distinctions.
+
 ## [1.0.0] — 2026-06-11
 
 First stable release. The engine has been feature-complete across caching,
@@ -105,4 +123,5 @@ Everything that shipped across 0.2–0.7 is part of 1.0:
 - Initial release: TOML task config, Rhai scripting, dependency resolution,
   parallel execution, file watching.
 
+[1.1.0]: https://github.com/cargopete/yatr/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cargopete/yatr/releases/tag/v1.0.0
