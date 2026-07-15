@@ -13,6 +13,10 @@ keywords = ["task-runner", "build", "automation", "developer-tools"]
 categories = ["development-tools", "command-line-utilities"]
 readme = "README.md"
 
+# The marketing site is deployed separately (Vercel); it has no business
+# inside the published crate.
+exclude = ["/landing"]
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
