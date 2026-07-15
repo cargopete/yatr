@@ -23,12 +23,12 @@
     "settings": {
       "description": "Global settings",
       "default": {
-        "cache": false,
+        "cache": true,
         "cache_dir": null,
         "parallelism": 0,
         "remote_cache": null,
         "shell": null,
-        "watch_debounce_ms": 0
+        "watch_debounce_ms": 300
       },
       "allOf": [
         {
@@ -82,7 +82,7 @@
       ],
       "properties": {
         "protocol": {
-          "description": "Wire protocol: `native` (yatr's JSON + BLAKE3) or `reapi` (SHA-256 + protobuf `ActionResult`, compatible with bazel-remote / BuildBuddy).",
+          "description": "Wire protocol: `native` (yatr's JSON + BLAKE3) or `reapi` (SHA-256 + protobuf `ActionResult`, compatible with `bazel-remote` / `BuildBuddy`).",
           "default": "native",
           "allOf": [
             {
@@ -312,6 +312,14 @@
       "properties": {
         "bin": {
           "description": "Subdirectory within the extracted archive to add to `PATH` (template; defaults to the archive root).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "Optional SHA-256 (hex) of the downloaded archive. When set, the archive is verified against this digest before extraction and a mismatch aborts the install — pinning the *bytes*, not just the version + URL.",
           "default": null,
           "type": [
             "string",

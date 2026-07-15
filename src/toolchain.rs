@@ -96,12 +96,17 @@ async fn ensure_one(name: &str, tc: &ToolchainConfig, dir: &Path) -> Result<Path
     }
 
     let url = render(&tc.url, &tc.version);
-    download_and_extract(name, &url, &install_dir).await?;
+    download_and_extract(name, &url, tc.sha256.as_deref(), &install_dir).await?;
     std::fs::write(&marker, &url).map_err(|e| err(name, format!("cannot write marker: {e}")))?;
     Ok(bin)
 }
 
-async fn download_and_extract(name: &str, url: &str, dest: &Path) -> Result<()> {
+async fn download_and_extract(
+    name: &str,
+    url: &str,
+    sha256: Option<&str>,
+    dest: &Path,
+) -> Result<()> {
     let lower = url.to_ascii_lowercase();
     if !(lower.ends_with(".tar.gz") || lower.ends_with(".tgz")) {
         return Err(err(
@@ -118,6 +123,21 @@ async fn download_and_extract(name: &str, url: &str, dest: &Path) -> Result<()> 
         .bytes()
         .await
         .map_err(|e| err(name, format!("failed to read {url}: {e}")))?;
+
+    // Verify the downloaded bytes against the pinned digest *before* extracting,
+    // so a re-tagged URL or a tampered mirror can never reach the filesystem.
+    if let Some(expected) = sha256 {
+        let actual = crate::reapi::sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(expected.trim()) {
+            return Err(err(
+                name,
+                format!(
+                    "SHA-256 mismatch for {url}: expected {}, got {actual}",
+                    expected.trim()
+                ),
+            ));
+        }
+    }
 
     std::fs::create_dir_all(dest).map_err(|e| err(name, format!("cannot create dir: {e}")))?;
     let mut archive = tar::Archive::new(GzDecoder::new(&bytes[..]));
@@ -183,6 +203,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 url: format!("{}/tool.tar.gz", server.uri()),
                 bin: Some("bin".to_string()),
+                sha256: None,
             },
         );
 
@@ -196,5 +217,107 @@ mod tests {
         // Second call is served from cache (mock expects exactly one GET).
         let bins2 = ensure_all(&toolchains, dir.path()).await.unwrap();
         assert_eq!(bins, bins2);
+    }
+
+    /// A `sha256` that matches the served bytes installs as normal.
+    #[tokio::test]
+    async fn accepts_matching_sha256() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mut tar_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_buf, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let body = b"#!/bin/sh\necho hi\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/hello", &body[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        // The digest the install must match is the one of the exact bytes served.
+        let digest = crate::reapi::sha256_hex(&tar_buf);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/tool.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(tar_buf))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut toolchains = HashMap::new();
+        toolchains.insert(
+            "demo".to_string(),
+            ToolchainConfig {
+                version: "1.0.0".to_string(),
+                url: format!("{}/tool.tar.gz", server.uri()),
+                bin: Some("bin".to_string()),
+                sha256: Some(digest),
+            },
+        );
+
+        let bins = ensure_all(&toolchains, dir.path()).await.unwrap();
+        assert!(bins[0].join("hello").is_file());
+    }
+
+    /// A `sha256` that doesn't match the served bytes must abort the install
+    /// before anything is extracted to disk.
+    #[tokio::test]
+    async fn rejects_sha256_mismatch() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A minimal valid .tar.gz so we get past the format check and reach
+        // the digest comparison.
+        let mut tar_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_buf, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let body = b"#!/bin/sh\necho hi\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/hello", &body[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/tool.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(tar_buf))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut toolchains = HashMap::new();
+        toolchains.insert(
+            "demo".to_string(),
+            ToolchainConfig {
+                version: "1.0.0".to_string(),
+                url: format!("{}/tool.tar.gz", server.uri()),
+                bin: Some("bin".to_string()),
+                // Wrong digest: 64 hex chars that can't match the real archive.
+                sha256: Some("0".repeat(64)),
+            },
+        );
+
+        let result = ensure_all(&toolchains, dir.path()).await;
+        assert!(result.is_err(), "mismatched sha256 must fail");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("SHA-256 mismatch"), "unexpected error: {msg}");
+
+        // Nothing should have been left installed.
+        assert!(
+            !dir.path().join("demo/1.0.0/.yatr-installed").exists(),
+            "a failed verification must not write the install marker"
+        );
     }
 }

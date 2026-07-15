@@ -58,6 +58,12 @@ pub struct ToolchainConfig {
     /// (template; defaults to the archive root).
     #[serde(default)]
     pub bin: Option<String>,
+
+    /// Optional SHA-256 (hex) of the downloaded archive. When set, the archive
+    /// is verified against this digest before extraction and a mismatch aborts
+    /// the install — pinning the *bytes*, not just the version + URL.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// Global settings for YATR behavior

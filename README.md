@@ -24,13 +24,25 @@ truth: content-addressed, output-restoring, and shareable across machines and CI
 | Remote / shared cache (+ REAPI) | ❌ | ❌ | ❌ | ✅ |
 | Signed cache (anti-poisoning) | ❌ | ❌ | ❌ | ✅ |
 | Affected (monorepo) detection | ❌ | ❌ | ⚠️ | ✅ |
-| Toolchain management | ❌ | ❌ | ❌ | ✅ |
+| Toolchain management | ❌ | ❌ | ⚠️ ¹ | ✅ |
 | Sandboxed WASM plugins | ❌ | ❌ | ❌ | ✅ |
 | Config schema + editor LSP | ❌ | ⚠️ | ❌ | ✅ |
-| Watch mode | ❌ | ❌ | ❌ | ✅ |
+| Watch mode | ❌ | ❌ | ✅ ² | ✅ |
 | Scripting | Shell | Shell | Multiple | Rhai + WASM |
 | Cross-platform | ❌ | ⚠️ | ✅ | ✅ |
 | Zero runtime deps | N/A | ✅ | ❌ | ✅ |
+
+A ⚠️ means "partial / with caveats", not "absent" — the footnotes say why rather than
+letting an emoji do the arguing:
+
+- **¹ Toolchain management — cargo-make.** cargo-make *can* select an installed rustup
+  toolchain per task and auto-install missing cargo crates (`install_crate`). yatr's
+  `[toolchain]` does a different job: it pins and downloads an exact *language runtime*
+  (a specific Node, Python, …), content-addressed and reused across machines and CI —
+  reproducibility for the non-Rust parts, not just "install this cargo subcommand".
+- **² Watch mode — cargo-make.** cargo-make has watch (`watch = true`), delegating to
+  the external `cargo-watch`. yatr's is built in (no extra binary), which is why it's a
+  plain ✅ for both.
 
 yatr sits in the sweet spot: **simpler than cargo-make**, **more powerful than just**.
 
@@ -370,6 +382,7 @@ a fresh checkout runs green with no manual installs:
 version = "20.11.0"
 url = "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.tar.gz"
 bin = "node-v{version}-{os}-{arch}/bin"
+sha256 = "..."            # optional; pins the *bytes*, not just the version + URL
 
 [tasks.build]
 run = ["node build.js"]   # uses the pinned node, wherever yatr runs
@@ -379,6 +392,14 @@ run = ["node build.js"]   # uses the pinned node, wherever yatr runs
 substituted into the templates. Toolchains are cached under a local toolchains dir
 (override with `YATR_TOOLCHAIN_DIR`) and installed once. `.tar.gz` archives are
 supported today (zip is on the roadmap).
+
+**Failure is loud, never silent.** If a pinned runtime can't be fetched — bad URL,
+404, or an unsupported archive type — yatr aborts the run rather than quietly
+falling back to whatever's on the system `PATH`, so a broken pin can't resurrect
+"works on my machine". And when you set the optional `sha256`, the downloaded
+archive is verified against it **before extraction**: a re-tagged URL or a tampered
+mirror fails the install instead of reaching your disk. Pinning the version + URL
+tells yatr *what* to fetch; the digest is what makes it trustworthy.
 
 ## Splitting config across files
 
@@ -540,6 +561,7 @@ protocol = "native"              # or "reapi" (bazel-remote compatible)
 version = "20.11.0"
 url = "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.tar.gz"
 bin = "node-v{version}-{os}-{arch}/bin"
+sha256 = "..."                   # optional; verify the archive before install
 
 # Task definition
 [tasks.example]
