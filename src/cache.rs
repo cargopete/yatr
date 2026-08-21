@@ -69,6 +69,10 @@ struct SignedAc {
     result: ActionResult,
 }
 
+/// Files matched by a set of `sources` patterns, paired with a per-pattern
+/// flag recording whether that pattern matched anything at all.
+type SourceMatches = (Vec<(String, PathBuf)>, Vec<bool>);
+
 /// Task result cache
 #[derive(Debug, Clone)]
 pub struct Cache {
@@ -621,25 +625,43 @@ impl Cache {
         Ok(hasher.finalize().to_hex()[..16].to_string())
     }
 
-    /// Hash the contents of source files matching the glob patterns, rooted at
-    /// `cwd` and respecting `.gitignore` (so build artifacts and `node_modules`
-    /// don't bloat or destabilise the key).
-    fn hash_sources(cwd: &Path, patterns: &[String]) -> Result<String> {
+    /// Directories never walked when collecting sources, no matter what the
+    /// patterns say. Both hold state that changes underneath a task without
+    /// the task's inputs having changed: `.git` moves on every commit, and
+    /// `.yatr` is this cache's own on-disk state when `cache_dir` is local.
+    /// Hashing either would make every key unstable.
+    const NEVER_WALKED: &'static [&'static str] = &[".git", ".yatr"];
+
+    /// Walk `cwd` and collect the files matching `patterns`, returning them
+    /// alongside a per-pattern flag saying whether that pattern matched
+    /// anything. Hidden entries are walked: a `sources` glob pointing at
+    /// `.github/`, `.cargo/` or similar is a legitimate declared input, and
+    /// skipping it silently collapsed the cache key (see `hash_sources`).
+    fn collect_sources(cwd: &Path, patterns: &[String]) -> Result<SourceMatches> {
         let mut builder = GlobSetBuilder::new();
+        let mut per_pattern = Vec::with_capacity(patterns.len());
         for pattern in patterns {
             let glob = Glob::new(pattern).map_err(|e| YatrError::Cache {
                 message: format!("Invalid glob pattern '{pattern}': {e}"),
             })?;
+            per_pattern.push(glob.compile_matcher());
             builder.add(glob);
         }
         let globset = builder.build().map_err(|e| YatrError::Cache {
             message: format!("Failed to build glob set: {e}"),
         })?;
 
-        // Collect matching files relative to cwd. The `ignore` walker skips
-        // .git and honours .gitignore; it does not follow symlinks by default.
+        // `hidden(false)` walks dotfiles and dot-directories; `.gitignore` is
+        // still honoured, so build artifacts and node_modules stay out.
         let mut files: Vec<(String, PathBuf)> = Vec::new();
+        let mut matched = vec![false; patterns.len()];
         for entry in WalkBuilder::new(cwd)
+            .hidden(false)
+            .filter_entry(|e| {
+                !Self::NEVER_WALKED
+                    .iter()
+                    .any(|skip| e.file_name() == std::ffi::OsStr::new(skip))
+            })
             .build()
             .filter_map(std::result::Result::ok)
         {
@@ -651,12 +673,38 @@ impl Cache {
                 continue;
             };
             if globset.is_match(rel) {
+                for (i, m) in per_pattern.iter().enumerate() {
+                    if m.is_match(rel) {
+                        matched[i] = true;
+                    }
+                }
                 files.push((rel.to_string_lossy().into_owned(), path.to_path_buf()));
             }
         }
 
         // Sort by relative path for a deterministic hash.
         files.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok((files, matched))
+    }
+
+    /// The `sources` patterns that match no file under `cwd`. A pattern that
+    /// matches nothing contributes nothing to the cache key, which is nearly
+    /// always a typo rather than an intention, so `yatr check` reports them.
+    pub fn unmatched_source_patterns(cwd: &Path, patterns: &[String]) -> Result<Vec<String>> {
+        let (_, matched) = Self::collect_sources(cwd, patterns)?;
+        Ok(patterns
+            .iter()
+            .zip(matched)
+            .filter(|(_, m)| !*m)
+            .map(|(p, _)| p.clone())
+            .collect())
+    }
+
+    /// Hash the contents of source files matching the glob patterns, rooted at
+    /// `cwd` and respecting `.gitignore` (so build artifacts and `node_modules`
+    /// don't bloat or destabilise the key).
+    fn hash_sources(cwd: &Path, patterns: &[String]) -> Result<String> {
+        let (files, _) = Self::collect_sources(cwd, patterns)?;
 
         let mut hasher = Hasher::new();
         for (rel, path) in files {
@@ -909,6 +957,100 @@ mod tests {
         // Mutating the source must change the key → miss.
         std::fs::write(&src, b"v2").unwrap();
         assert_eq!(cache.get("t", &config, work.path()).await.unwrap(), None);
+    }
+
+    /// A `sources` glob under a dot-directory must be hashed like any other.
+    /// It previously matched nothing, because the walker skipped hidden
+    /// entries, so the task never invalidated when its declared input changed.
+    #[tokio::test]
+    async fn test_dotted_source_change_busts_key() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf())).unwrap();
+
+        let dir = work.path().join(".config");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.json"), b"v1").unwrap();
+
+        let config = task_with(&[".config/f.json"], &[]);
+        cache
+            .put("t", &config, work.path(), "out-v1", Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(
+            cache.get("t", &config, work.path()).await.unwrap(),
+            Some("out-v1".to_string())
+        );
+
+        std::fs::write(dir.join("f.json"), b"v2").unwrap();
+        assert_eq!(
+            cache.get("t", &config, work.path()).await.unwrap(),
+            None,
+            "changing a dot-path source must bust the key"
+        );
+    }
+
+    /// The cache is global, so an unmatched `sources` list used to collapse the
+    /// key to task-name-plus-command and serve another project's output.
+    #[tokio::test]
+    async fn test_dotted_source_does_not_collide_across_projects() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let cache = Cache::new(Some(cache_dir.path().to_path_buf())).unwrap();
+
+        for (dir, body) in [(&a, "project-a"), (&b, "project-b")] {
+            let d = dir.path().join(".plugin");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("manifest.json"), body.as_bytes()).unwrap();
+        }
+
+        let config = task_with(&[".plugin/manifest.json"], &[]);
+        cache
+            .put("manifest", &config, a.path(), "out-a", Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cache.get("manifest", &config, b.path()).await.unwrap(),
+            None,
+            "project b must not be served project a's cached output"
+        );
+    }
+
+    /// `.git` must stay out of the hash now that hidden entries are walked:
+    /// its contents change on every commit and would destabilise every key.
+    #[test]
+    fn test_git_directory_is_not_hashed() {
+        let work = tempfile::tempdir().unwrap();
+        let git = work.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), b"ref: refs/heads/main").unwrap();
+        std::fs::write(work.path().join("src.rs"), b"fn main() {}").unwrap();
+
+        let before = Cache::hash_sources(work.path(), &["**/*".to_string()]).unwrap();
+        std::fs::write(git.join("HEAD"), b"ref: refs/heads/other").unwrap();
+        let after = Cache::hash_sources(work.path(), &["**/*".to_string()]).unwrap();
+
+        assert_eq!(before, after, "a change inside .git must not move the key");
+    }
+
+    /// Zero-match source patterns are the symptom `yatr check` should surface.
+    #[test]
+    fn test_unmatched_source_patterns_are_reported() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("real.txt"), b"x").unwrap();
+        let dotted = work.path().join(".hidden");
+        std::fs::create_dir_all(&dotted).unwrap();
+        std::fs::write(dotted.join("also-real.txt"), b"x").unwrap();
+
+        let patterns = vec![
+            "real.txt".to_string(),
+            ".hidden/also-real.txt".to_string(),
+            "nowhere/*.rs".to_string(),
+        ];
+        let unmatched = Cache::unmatched_source_patterns(work.path(), &patterns).unwrap();
+        assert_eq!(unmatched, vec!["nowhere/*.rs".to_string()]);
     }
 
     #[tokio::test]

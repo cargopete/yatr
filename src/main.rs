@@ -40,6 +40,7 @@ mod trace;
 mod wasm;
 mod watch;
 
+use cache::Cache;
 use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};
 use config::Config;
 use error::{Result, YatrError};
@@ -224,6 +225,26 @@ fn run_check_command(cli: &Cli) -> Result<()> {
                 "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
             ));
         }
+        // A `sources` pattern matching nothing contributes nothing to the
+        // cache key, so the task silently stops invalidating. Nearly always a
+        // typo or a path that moved.
+        if !task.sources.is_empty() && !task.no_cache {
+            match Cache::unmatched_source_patterns(&base, &task.sources) {
+                Ok(unmatched) if !unmatched.is_empty() => {
+                    warnings.push(format!(
+                        "task '{name}': sources pattern(s) match no files: {}. \
+                         They contribute nothing to the cache key, so the task \
+                         will not re-run when they change",
+                        unmatched.join(", ")
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warnings.push(format!("task '{name}': could not check sources: {e}"));
+                }
+            }
+        }
+
         if task.foreground && task.run.len() > 1 {
             warnings.push(format!(
                 "task '{name}': foreground tasks only run their first command ({} given)",
