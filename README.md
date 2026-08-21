@@ -491,6 +491,60 @@ vim.lsp.start({ name = "yatr", cmd = { "yatr", "lsp" },
 
 Real-world projects using yatr in production:
 
+### The Night's Watch - 55 Repositories, One Task Vocabulary
+
+**Stack**: Rust, Go, Solidity (Foundry), Astro/Next.js, Python, shell, and 16 config-only indexer definitions
+
+[nightswatchhq](https://github.com/nightswatchhq) builds the data layer tooling for The Graph:
+indexers, gateways, oracles, data services and the nests that feed them. Fifty-five of its
+repositories now ship a `yatr.toml`, which makes yatr the one entry point across an org where
+almost no two projects share a toolchain.
+
+**What that buys, concretely:**
+
+- **One vocabulary across every language.** `fmt`, `lint`, `test`, `build` and `ci` mean the same
+  thing whether the repo underneath is a cargo workspace, a Foundry project, a Go module, an
+  Astro site or a folder of TOML. You do not have to read a repo to know how to check it.
+- **Tasks for projects that do not build.** Sixteen of these repos are indexer definitions with
+  no compile step at all. yatr gives them real tasks anyway: regenerate the derived schema,
+  fail if it has drifted from the config, probe the configured RPC endpoints.
+- **`ci` is the contract.** Every repo's `ci` task is exactly what its CI runs, so a green
+  local run means something.
+
+**The pattern that made it work**, for anyone doing the same across many repos:
+
+```toml
+# The aggregate task is named `ci`, not `check`. `yatr check` is a builtin that
+# validates the config file, and it shadows a task of that name without warning.
+[tasks.ci]
+desc = "What CI runs"
+depends = ["fmt-check", "lint", "test"]
+run = []
+```
+
+Reserved names to route around when naming tasks: `run`, `list`, `watch`, `graph`, `cache`,
+`init`, `check`, `schema`, `lsp`, `affected`, `help`.
+
+For repos with a generated artifact committed alongside its source, a drift task is the single
+highest-value thing yatr can run, and it needs no CI infrastructure at all:
+
+```toml
+[tasks.drift]
+desc = "Fail if the derived artifacts are stale against the config"
+run = [
+    "nuthatch schema",
+    "git diff --exit-code -- schema.json llms.txt semantic.toml",
+]
+sources = ["nuthatch.toml", "abis/**/*.json", "schema.json", "semantic.toml"]
+```
+
+**Results**:
+- 55 repos, 368 task definitions, one command to learn
+- The first run of `drift` found stale committed artifacts in 6 of 16 indexer definitions
+- The first run of `fmt-check` found 8 of 13 Rust repos were unformatted
+
+---
+
 ### Boutique Bouquet - Full-Stack E-Commerce Platform
 
 **Stack**: Rust (Axum) backend + Next.js frontend + PostgreSQL + Docker
