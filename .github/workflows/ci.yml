@@ -45,6 +45,11 @@ jobs:
   audit:
     name: Security audit
     runs-on: ubuntu-latest
+    # audit-check publishes its result as a check run, which push events
+    # cannot do with the default read-only token.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v2
