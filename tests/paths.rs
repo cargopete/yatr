@@ -26,7 +26,7 @@ const ROOT: &str = "\
 [settings]
 cache = false
 [tasks.where]
-run = [\"pwd\"]
+run = [\"cat data.txt\"]
 sources = [\"data.txt\"]
 [tasks.web]
 cwd = \"web\"
@@ -37,7 +37,7 @@ fn root_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path();
     std::fs::write(p.join("yatr.toml"), ROOT).unwrap();
-    std::fs::write(p.join("data.txt"), "x").unwrap();
+    std::fs::write(p.join("data.txt"), "root-data").unwrap();
     std::fs::create_dir_all(p.join("web")).unwrap();
     std::fs::write(p.join("web/index.html"), "").unwrap();
     std::fs::create_dir_all(p.join("sub")).unwrap();
@@ -47,17 +47,12 @@ fn root_project() -> tempfile::TempDir {
 #[test]
 fn tasks_run_in_the_config_directory_from_a_subdirectory() {
     let dir = root_project();
-    let root = dir.path().canonicalize().unwrap();
-    let sub = root.join("sub");
+    let sub = dir.path().join("sub");
 
+    // Reads a file by relative path rather than printing `pwd`, whose form differs under Git Bash.
     let out = yatr(&sub, &["where"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let printed = stdout(&out);
-    assert!(
-        printed.lines().any(|l| Path::new(l.trim()) == root),
-        "expected pwd {}: {printed}",
-        root.display()
-    );
+    assert!(stdout(&out).contains("root-data"), "{}", stdout(&out));
 
     let out = yatr(&sub, &["web"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
