@@ -279,3 +279,56 @@ fn check_validates_files_and_warns() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("warning:"), "expected a warning: {stdout}");
 }
+
+/// Write `toml` as the yatr.toml of a fresh temp dir and run `yatr` there.
+fn run_in(toml: &str, args: &[&str]) -> (tempfile::TempDir, std::process::Output) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("yatr.toml"), toml).unwrap();
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .unwrap();
+    (dir, out)
+}
+
+/// A failing task shows what it printed and reports its real exit code.
+#[cfg(unix)]
+#[test]
+fn failing_task_shows_output_and_real_exit_code() {
+    let (_dir, out) = run_in(
+        "[tasks.boom]\nshell = true\nno_cache = true\n\
+         run = [\"echo 'IMPORTANT DIAGNOSTIC LINE'; echo 'to stderr' >&2; exit 3\"]\n",
+        &["boom"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let all = format!("{stdout}{stderr}");
+    assert_eq!(out.status.code(), Some(3), "{all}");
+    assert!(all.contains("IMPORTANT DIAGNOSTIC LINE"), "{all}");
+    assert!(all.contains("to stderr"), "{all}");
+    assert!(
+        stderr.contains("Task 'boom' failed with exit code 3"),
+        "{stderr}"
+    );
+    assert!(!all.contains("exit code 1"), "{all}");
+}
+
+/// `--json` still emits its document when a task fails, with the output and code.
+#[cfg(unix)]
+#[test]
+fn failing_task_json_carries_output_and_code() {
+    let (_dir, out) = run_in(
+        "[tasks.boom]\nshell = true\nno_cache = true\nrun = [\"echo diag; exit 7\"]\n",
+        &["run", "--json", "boom"],
+    );
+    assert_eq!(out.status.code(), Some(7));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["tasks"][0]["success"], false);
+    assert_eq!(json["tasks"][0]["exit_code"], 7);
+    assert!(json["tasks"][0]["output"]
+        .as_str()
+        .unwrap()
+        .contains("diag"));
+}

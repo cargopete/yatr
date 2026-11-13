@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A failing task's stdout and stderr are shown, and yatr exits with the failing command's exit code instead of always 1 (#5).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

@@ -32,6 +32,27 @@ pub struct TaskResult {
     pub cached: bool,
     pub output: Option<String>,
     pub error: Option<String>,
+    /// Exit code of the failing command, when the task failed
+    pub exit_code: Option<i32>,
+}
+
+/// Everything a task printed, stdout and stderr together.
+#[derive(Clone, Default)]
+struct Capture(Arc<std::sync::Mutex<String>>);
+
+impl Capture {
+    fn push(&self, text: &str) {
+        if let Ok(mut buf) = self.0.lock() {
+            buf.push_str(text);
+        }
+    }
+
+    fn take(&self) -> String {
+        self.0
+            .lock()
+            .map(|mut buf| std::mem::take(&mut *buf))
+            .unwrap_or_default()
+    }
 }
 
 /// Executor configuration
@@ -95,6 +116,20 @@ impl Executor {
 
     /// Execute tasks according to the execution plan
     pub async fn execute(&self, graph: &TaskGraph, task_name: &str) -> Result<Vec<TaskResult>> {
+        let mut results = Vec::new();
+        self.execute_into(graph, task_name, &mut results)
+            .await
+            .map(|()| results)
+    }
+
+    /// As [`Executor::execute`], but results of tasks that finished before a
+    /// failure are kept in `all_results` rather than lost with the error.
+    pub async fn execute_into(
+        &self,
+        graph: &TaskGraph,
+        task_name: &str,
+        all_results: &mut Vec<TaskResult>,
+    ) -> Result<()> {
         let tasks = graph.execution_order(task_name)?;
 
         if self.exec_config.dry_run {
@@ -102,7 +137,7 @@ impl Executor {
                 let plan = ExecutionPlan::from_tasks(tasks, graph);
                 self.print_dry_run(&plan);
             }
-            return Ok(Vec::new());
+            return Ok(());
         }
 
         let parallelism = if self.exec_config.parallelism == 0 {
@@ -163,7 +198,7 @@ impl Executor {
             }
         }
 
-        let mut all_results = Vec::new();
+        let first = all_results.len();
         while let Some(joined) = running.join_next().await {
             let result =
                 joined.map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
@@ -180,9 +215,10 @@ impl Executor {
             all_results.push(result);
 
             if !success && !allow_failure {
+                let code = all_results.last().and_then(|r| r.exit_code).unwrap_or(1);
                 return Err(YatrError::TaskFailed {
                     task: finished,
-                    code: 1,
+                    code,
                     stderr: None,
                 });
             }
@@ -201,9 +237,9 @@ impl Executor {
         }
 
         if !self.exec_config.json {
-            self.print_summary(&all_results);
+            self.print_summary(&all_results[first..]);
         }
-        Ok(all_results)
+        Ok(())
     }
 
     /// Build the dependency bookkeeping for the ready-queue scheduler:
@@ -272,6 +308,7 @@ impl Executor {
                             cached: true,
                             output: Some(cached),
                             error: None,
+                            exit_code: None,
                         });
                     }
                 }
@@ -288,37 +325,8 @@ impl Executor {
         let trace_before =
             (exec_config.trace_io && !task.config.foreground).then(|| crate::trace::snapshot(&cwd));
 
-        let result = if task.config.foreground {
-            // Execute in foreground with inherited stdio (for long-running processes)
-            Self::execute_foreground(&task.name, &task.config.run, &env, &cwd, &task_exec_config)
-                .await
-        } else if let Some(wasm) = &task.config.wasm {
-            // Execute a sandboxed WASM plugin (local path or downloaded URL)
-            Self::execute_wasm(&task.name, wasm, &cwd, &env).await
-        } else if let Some(script) = &task.config.script {
-            // Execute Rhai script
-            Self::execute_script(&task.name, script, &env, &cwd)
-        } else if task.config.parallel {
-            // Execute commands in parallel
-            Self::execute_commands_parallel(
-                &task.name,
-                &task.config.run,
-                &env,
-                &cwd,
-                &task_exec_config,
-            )
-            .await
-        } else {
-            // Execute commands sequentially
-            Self::execute_commands_sequential(
-                &task.name,
-                &task.config.run,
-                &env,
-                &cwd,
-                &task_exec_config,
-            )
-            .await
-        };
+        let capture = Capture::default();
+        let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &capture).await;
 
         let duration = start.elapsed();
 
@@ -327,8 +335,9 @@ impl Executor {
             Self::report_io_trace(&task.name, &cwd, &task.config.outputs, &before);
         }
 
+        let output = capture.take();
         match result {
-            Ok(output) => {
+            Ok(()) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
                 if let Some(cache) = cache {
                     if !task.config.no_cache && !task.config.foreground {
@@ -346,6 +355,7 @@ impl Executor {
                     cached: false,
                     output: Some(output),
                     error: None,
+                    exit_code: None,
                 })
             }
             Err(e) => Ok(TaskResult {
@@ -354,9 +364,56 @@ impl Executor {
                 duration,
                 start_offset,
                 cached: false,
-                output: None,
+                output: Some(output),
+                exit_code: Some(i32::from(e.exit_code())),
                 error: Some(e.to_string()),
             }),
+        }
+    }
+
+    /// Run whichever kind of body a task has, capturing what it prints.
+    async fn run_task_body(
+        task: &TaskNode,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+        exec_config: &ExecutorConfig,
+        capture: &Capture,
+    ) -> Result<()> {
+        if task.config.foreground {
+            // Execute in foreground with inherited stdio (for long-running processes)
+            Self::execute_foreground(&task.name, &task.config.run, env, cwd, exec_config)
+                .await
+                .map(|out| capture.push(&out))
+        } else if let Some(wasm) = &task.config.wasm {
+            // Execute a sandboxed WASM plugin (local path or downloaded URL)
+            Self::execute_wasm(&task.name, wasm, cwd, env)
+                .await
+                .map(|out| capture.push(&out))
+        } else if let Some(script) = &task.config.script {
+            // Execute Rhai script
+            Self::execute_script(&task.name, script, env, cwd).map(|out| capture.push(&out))
+        } else if task.config.parallel {
+            // Execute commands in parallel
+            Self::execute_commands_parallel(
+                &task.name,
+                &task.config.run,
+                env,
+                cwd,
+                exec_config,
+                capture,
+            )
+            .await
+        } else {
+            // Execute commands sequentially
+            Self::execute_commands_sequential(
+                &task.name,
+                &task.config.run,
+                env,
+                cwd,
+                exec_config,
+                capture,
+            )
+            .await
         }
     }
 
@@ -417,16 +474,12 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-    ) -> Result<String> {
-        let mut all_output = String::new();
-
+        capture: &Capture,
+    ) -> Result<()> {
         for cmd in commands {
-            let output = Self::execute_command(cmd, env, cwd, exec_config).await?;
-            all_output.push_str(&output);
-            all_output.push('\n');
+            Self::execute_command(cmd, env, cwd, exec_config, capture).await?;
         }
-
-        Ok(all_output)
+        Ok(())
     }
 
     /// Execute commands in foreground with inherited stdio
@@ -470,10 +523,9 @@ impl Executor {
         let status = command.status().await?;
 
         if !status.success() {
-            return Err(YatrError::TaskFailed {
-                task: cmd.clone(),
-                code: status.code().unwrap_or(1),
-                stderr: None,
+            return Err(YatrError::CommandFailed {
+                command: cmd.clone(),
+                code: exit_code(status),
             });
         }
 
@@ -487,7 +539,8 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-    ) -> Result<String> {
+        capture: &Capture,
+    ) -> Result<()> {
         let mut handles = Vec::new();
 
         for cmd in commands {
@@ -495,22 +548,30 @@ impl Executor {
             let env = env.clone();
             let cwd = cwd.to_path_buf();
             let exec_config = exec_config.clone();
+            let own = Capture::default();
+            let theirs = own.clone();
 
-            handles.push(tokio::spawn(async move {
-                Self::execute_command(&cmd, &env, &cwd, &exec_config).await
-            }));
+            handles.push((
+                own,
+                tokio::spawn(async move {
+                    Self::execute_command(&cmd, &env, &cwd, &exec_config, &theirs).await
+                }),
+            ));
         }
 
-        let mut all_output = String::new();
-        for handle in handles {
-            let output = handle
+        let mut first_err = None;
+        for (own, handle) in handles {
+            let result = handle
                 .await
-                .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
-            all_output.push_str(&output);
-            all_output.push('\n');
+                .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))
+                .and_then(|r| r);
+            capture.push(&own.take());
+            if let Err(e) = result {
+                first_err.get_or_insert(e);
+            }
         }
 
-        Ok(all_output)
+        first_err.map_or(Ok(()), Err)
     }
 
     /// Execute a single command
@@ -519,7 +580,8 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-    ) -> Result<String> {
+        capture: &Capture,
+    ) -> Result<()> {
         let parts = Self::parse_command(cmd, exec_config.shell);
 
         let mut command = if exec_config.shell {
@@ -543,18 +605,16 @@ impl Executor {
             .stderr(Stdio::piped());
 
         let output = command.output().await?;
+        capture.push(&String::from_utf8_lossy(&output.stdout));
+        capture.push(&String::from_utf8_lossy(&output.stderr));
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(YatrError::TaskFailed {
-                task: cmd.to_string(),
-                code: output.status.code().unwrap_or(1),
-                stderr: Some(stderr.to_string()),
+            return Err(YatrError::CommandFailed {
+                command: cmd.to_string(),
+                code: exit_code(output.status),
             });
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.to_string())
+        Ok(())
     }
 
     /// Parse a command string into parts
@@ -695,6 +755,15 @@ impl Executor {
             );
         }
     }
+}
+
+/// A process's exit code, with death by signal N reported as 128 + N like a shell.
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return 128 + signal;
+    }
+    status.code().unwrap_or(1)
 }
 
 #[cfg(test)]

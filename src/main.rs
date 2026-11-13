@@ -74,8 +74,9 @@ async fn main() -> ExitCode {
         Err(e) => {
             // Render via miette for a clean message + diagnostic code/help,
             // rather than the raw `{:?}` struct debug.
+            let code = e.exit_code();
             eprintln!("{:?}", miette::Report::new(e));
-            ExitCode::FAILURE
+            ExitCode::from(code)
         }
     }
 }
@@ -417,9 +418,12 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     let executor = Executor::new(config, exec_config, cache);
 
     let mut all_results = Vec::new();
+    let mut outcome = Ok(());
     for task in tasks {
-        let mut results = executor.execute(&graph, task).await?;
-        all_results.append(&mut results);
+        outcome = executor.execute_into(&graph, task, &mut all_results).await;
+        if outcome.is_err() {
+            break;
+        }
     }
 
     if opts.json {
@@ -432,7 +436,7 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
         }
     }
 
-    Ok(())
+    outcome
 }
 
 /// Write a Chrome Trace Event Format file (viewable in `chrome://tracing` or
@@ -481,6 +485,7 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
                 "duration_ms": ms(r.duration),
                 "output": r.output,
                 "error": r.error,
+                "exit_code": r.exit_code,
             })
         })
         .collect();
