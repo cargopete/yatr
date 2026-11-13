@@ -70,6 +70,7 @@ and the run carries on; the exit status still reports how the tasks went.
 | `depends` | Tasks to run first |
 | `parallel` | Run `run` commands concurrently |
 | `env`, `cwd`, `shell` | Environment, working dir, shell mode |
+| `env_inputs` | Ambient variables that are [cache](./caching.md) inputs |
 | `foreground` | Inherit stdio (dev servers); not cached |
 | `sources`, `outputs` | [Caching](./caching.md) inputs/outputs |
 | `watch` | File patterns for `yatr watch` |

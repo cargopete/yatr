@@ -181,6 +181,9 @@ pub struct Executor {
     script_engine: ScriptEngine,
 }
 
+/// Cache fingerprints of finished tasks, keyed by task name.
+type Fingerprints = std::sync::Mutex<HashMap<String, String>>;
+
 impl Executor {
     /// Create a new executor
     #[must_use]
@@ -233,6 +236,8 @@ impl Executor {
         // dependencies have completed, rather than waiting for its whole
         // dependency "level" — better wall-clock when task durations are uneven.
         let (node_map, mut in_degree, dependents) = Self::build_dag(&tasks, graph);
+        // Cache fingerprints of finished tasks, folded into their dependents' keys.
+        let fingerprints: Arc<Fingerprints> = Arc::default();
 
         // Build the future that runs one task, gated by the concurrency semaphore.
         let spawn_one = |name: &str| {
@@ -242,6 +247,8 @@ impl Executor {
             let exec_config = self.exec_config.clone();
             let cache = self.cache.clone();
             let mp = multi_progress.clone();
+            let fingerprints = Arc::clone(&fingerprints);
+            let dep_keys = Self::dep_fingerprints(graph, name, &fingerprints);
             async move {
                 let _permit = sem.acquire().await.map_err(|e| {
                     YatrError::Io(std::io::Error::other(format!(
@@ -265,9 +272,16 @@ impl Executor {
                     prefix: format!("{} ", style(format!("{:<name_width$} │", task.name)).dim()),
                     progress: mp.clone(),
                 });
-                let result =
-                    Self::execute_single_task(&task, &config, &exec_config, cache.as_ref(), echo)
-                        .await;
+                let result = Self::execute_single_task(
+                    &task,
+                    &config,
+                    &exec_config,
+                    cache.as_ref(),
+                    &dep_keys,
+                    &fingerprints,
+                    echo,
+                )
+                .await;
 
                 if let Some(pb) = pb {
                     pb.finish_and_clear();
@@ -362,12 +376,40 @@ impl Executor {
         (node_map, in_degree, dependents)
     }
 
+    fn dep_fingerprints(graph: &TaskGraph, name: &str, fingerprints: &Fingerprints) -> Vec<String> {
+        let deps = graph.dependencies(name).unwrap_or_default();
+        fingerprints.lock().map_or_else(
+            |_| Vec::new(),
+            |f| {
+                deps.iter()
+                    .map(|d| f.get(*d).cloned().unwrap_or_else(|| (*d).to_string()))
+                    .collect()
+            },
+        )
+    }
+
+    fn record_fingerprint(
+        fingerprints: &Fingerprints,
+        task: &TaskNode,
+        key: Option<&str>,
+        cwd: &Path,
+    ) {
+        if let (Some(key), Ok(mut f)) = (key, fingerprints.lock()) {
+            f.insert(
+                task.name.clone(),
+                Cache::fingerprint(key, &task.config, cwd),
+            );
+        }
+    }
+
     /// Execute a single task
     async fn execute_single_task(
         task: &TaskNode,
         config: &Config,
         exec_config: &ExecutorConfig,
         cache: Option<&Cache>,
+        dep_keys: &[String],
+        fingerprints: &Fingerprints,
         echo: Option<Echo>,
     ) -> Result<TaskResult> {
         let start = Instant::now();
@@ -381,11 +423,19 @@ impl Executor {
             .clone()
             .unwrap_or_else(|| exec_config.cwd.clone());
 
+        let key = cache
+            .map(|_| Cache::compute_key(&task.name, &task.config, config, dep_keys, &cwd))
+            .transpose()?;
+        let cacheable = Cache::caches(&task.config);
+        let record_fingerprint =
+            || Self::record_fingerprint(fingerprints, task, key.as_deref(), &cwd);
+
         // Check cache
         if !exec_config.force {
-            if let Some(cache) = cache {
-                if !task.config.no_cache {
-                    if let Some(cached) = cache.get(&task.name, &task.config, &cwd).await? {
+            if let (Some(cache), Some(key)) = (cache, &key) {
+                if cacheable {
+                    if let Some(cached) = cache.get(&task.name, key, &cwd).await? {
+                        record_fingerprint();
                         if let Some(echo) = &echo {
                             echo.replay(&cached);
                         }
@@ -421,6 +471,7 @@ impl Executor {
         let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &sink).await;
 
         let duration = start.elapsed();
+        record_fingerprint();
 
         // IO tracing: report files written outside the declared `outputs`.
         if let Some(before) = trace_before {
@@ -431,10 +482,10 @@ impl Executor {
         match result {
             Ok(()) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
-                if let Some(cache) = cache {
-                    if !task.config.no_cache && !task.config.foreground {
+                if let (Some(cache), Some(key)) = (cache, &key) {
+                    if cacheable && !task.config.foreground {
                         let _ = cache
-                            .put(&task.name, &task.config, &cwd, &output, duration)
+                            .put(&task.name, key, &task.config, &cwd, &output, duration)
                             .await;
                     }
                 }

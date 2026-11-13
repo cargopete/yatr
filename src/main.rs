@@ -30,6 +30,7 @@ mod cli;
 mod config;
 mod error;
 mod executor;
+mod globs;
 mod graph;
 mod lsp;
 mod output;
@@ -226,6 +227,11 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         if !task.outputs.is_empty() && task.no_cache {
             warnings.push(format!(
                 "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
+            ));
+        }
+        if !task.outputs.is_empty() && task.sources.is_empty() && !task.no_cache {
+            warnings.push(format!(
+                "task '{name}': declares `outputs` but no `sources` — a task without sources is never cached"
             ));
         }
         // A `sources` pattern matching nothing contributes nothing to the
