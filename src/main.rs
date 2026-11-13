@@ -695,17 +695,22 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
 }
 
 fn init_config(force: bool) -> Result<()> {
-    let path = std::path::Path::new("YATR.toml");
+    let name = config::CONFIG_FILES
+        .iter()
+        .copied()
+        .find(|n| std::path::Path::new(n).exists())
+        .unwrap_or(config::CONFIG_FILES[0]);
+    let path = std::path::Path::new(name);
 
     if path.exists() && !force {
         return Err(YatrError::Io(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
-            "YATR.toml already exists (use --force to overwrite)",
+            format!("{name} already exists (use --force to overwrite)"),
         )));
     }
 
-    let template = r#"# YATR.toml - Task runner configuration
-# See https://github.com/yourusername/yatr for documentation
+    let template = r#"# yatr.toml - Task runner configuration
+# See https://cargopete.github.io/yatr/ for documentation
 
 [env]
 # Global environment variables
@@ -728,24 +733,20 @@ run = ["cargo clippy -- -D warnings"]
 desc = "Run tests"
 run = ["cargo test"]
 
-[tasks.check]
+[tasks.ci]
 desc = "Format, lint, and test"
 depends = ["fmt", "lint", "test"]
 run = []
 
 [tasks.build]
 desc = "Build release binary"
-depends = ["check"]
+depends = ["ci"]
 run = ["cargo build --release"]
 "#;
 
     std::fs::write(path, template)?;
 
-    println!(
-        "{} Created {}",
-        style("✓").green(),
-        style("YATR.toml").bold()
-    );
+    println!("{} Created {}", style("✓").green(), style(name).bold());
 
     Ok(())
 }

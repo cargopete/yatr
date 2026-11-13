@@ -9,6 +9,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `yatr check` warns about tasks named after a builtin subcommand (including `help`), which the bare form cannot reach, and names `yatr run <name>` (#4).
+- `yatr init` writes `yatr.toml`, the name yatr searches for, instead of `YATR.toml`; the template links the real docs and names its aggregate task `ci` rather than the shadowed `check` (#3).
 
 ## [1.1.0] — 2026-07-15
 
