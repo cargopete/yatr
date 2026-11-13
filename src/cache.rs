@@ -594,7 +594,8 @@ impl Cache {
     /// entries written by an older yatr are never served.
     const KEY_VERSION: &'static [u8] = b"yatr-cache-v3";
 
-    /// Compute the cache key for a task of `project`.
+    /// Compute the cache key for a task of `project`, given the
+    /// [`Cache::fingerprint`]s of its dependencies.
     ///
     /// The key is portable: it holds nothing machine-specific, so a remote
     /// cache can share it. Local entries are scoped to `cwd` on top of it.
@@ -602,6 +603,7 @@ impl Cache {
         task_name: &str,
         config: &TaskConfig,
         project: &Config,
+        deps: &[String],
         cwd: &Path,
     ) -> Result<String> {
         let mut hasher = Hasher::new();
@@ -672,6 +674,12 @@ impl Cache {
             }
         }
 
+        let mut deps = deps.to_vec();
+        deps.sort();
+        for dep in &deps {
+            Self::update_field(&mut hasher, dep.as_bytes());
+        }
+
         // Declared output patterns (sorted) — changing them changes the action.
         let mut outputs = config.outputs.clone();
         outputs.sort();
@@ -691,6 +699,28 @@ impl Cache {
     fn update_field(hasher: &mut Hasher, bytes: &[u8]) {
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
+    }
+
+    /// What a dependent folds into its key for this task: its key, plus the
+    /// contents of its outputs when it is not cached, since then the key
+    /// alone does not capture what it produced.
+    #[must_use]
+    pub fn fingerprint(key: &str, config: &TaskConfig, cwd: &Path) -> String {
+        if Self::caches(config) {
+            return key.to_string();
+        }
+        let mut hasher = Hasher::new();
+        hasher.update(key.as_bytes());
+        for path in Self::collect_output_files(cwd, &config.outputs) {
+            let rel = path.strip_prefix(cwd).unwrap_or(&path);
+            Self::update_field(&mut hasher, rel.to_string_lossy().as_bytes());
+            let content = std::fs::read_link(&path)
+                .map(|t| t.to_string_lossy().into_owned().into_bytes())
+                .or_else(|_| std::fs::read(&path))
+                .unwrap_or_default();
+            Self::update_field(&mut hasher, &content);
+        }
+        hasher.finalize().to_hex()[..16].to_string()
     }
 
     /// Directories never walked when collecting sources, no matter what the
@@ -1005,7 +1035,7 @@ mod tests {
     use super::*;
 
     fn key_of(name: &str, config: &TaskConfig, cwd: &Path) -> String {
-        Cache::compute_key(name, config, &Config::default(), cwd).unwrap()
+        Cache::compute_key(name, config, &Config::default(), &[], cwd).unwrap()
     }
 
     fn task_with(sources: &[&str], outputs: &[&str]) -> TaskConfig {
@@ -1242,11 +1272,25 @@ mod tests {
             ))
             .unwrap()
         };
-        let key = |p: &Config| Cache::compute_key("t", &task, p, work.path()).unwrap();
+        let key = |p: &Config| Cache::compute_key("t", &task, p, &[], work.path()).unwrap();
 
         let base = key(&project("26.11.1", "/tc/bin:/usr/bin"));
         assert_ne!(base, key(&project("24.11.1", "/tc/bin:/usr/bin")));
         assert_eq!(base, key(&project("26.11.1", "/tc/bin:/opt/homebrew/bin")));
+    }
+
+    #[test]
+    fn test_dependency_fingerprint_is_a_key_input() {
+        let work = tempfile::tempdir().unwrap();
+        let task = task_with(&[], &[]);
+        let key = |deps: &[String]| {
+            Cache::compute_key("t", &task, &Config::default(), deps, work.path()).unwrap()
+        };
+        assert_ne!(key(&["a".into()]), key(&["b".into()]));
+        assert_eq!(
+            key(&["a".into(), "b".into()]),
+            key(&["b".into(), "a".into()])
+        );
     }
 
     /// Zero-match source patterns are the symptom `yatr check` should surface.

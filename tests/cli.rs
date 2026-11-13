@@ -429,3 +429,21 @@ fn merged_and_declared_env_bust_the_key() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("MODE=two"));
 }
+
+/// A dependent re-runs when a dependency's inputs change.
+#[test]
+fn dependency_change_busts_dependent() {
+    let p = yatr_project(
+        "[tasks.gen]\nshell = true\nrun = [\"cp input.txt artifact.txt\"]\n\
+         sources = [\"input.txt\"]\noutputs = [\"artifact.txt\"]\n\
+         [tasks.verify]\ndepends = [\"gen\"]\nrun = [\"grep -q good artifact.txt\"]\nsources = [\"verify.sh\"]\n",
+    );
+    std::fs::write(p.path().join("verify.sh"), "").unwrap();
+    std::fs::write(p.path().join("input.txt"), "good").unwrap();
+    assert!(run_yatr(p.path(), &["verify"]).status.success());
+    std::fs::write(p.path().join("input.txt"), "bad").unwrap();
+    assert!(
+        !run_yatr(p.path(), &["verify"]).status.success(),
+        "verify replayed a result from before gen's input changed"
+    );
+}

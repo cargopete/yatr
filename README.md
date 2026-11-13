@@ -170,6 +170,7 @@ A task that declares `sources` is cached, keyed on:
 - Task configuration (commands, global and task env, pinned toolchains)
 - Source file contents
 - Ambient variables named in `env_inputs`
+- The keys of its dependencies
 
 A task with no `sources` has no declared inputs and is never cached.
 

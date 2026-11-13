@@ -15,6 +15,10 @@ env_inputs = ["CLANG", "PATH"]   # a different compiler on PATH busts the key
 run = ["./build.sh"]
 ```
 
+A task's key also folds in the keys of its `depends`, so a dependent re-runs
+whenever a dependency's inputs change. A dependency that is not cached
+contributes the contents of its declared `outputs` as well.
+
 **Only tasks with `sources` are cached.** A task without them has no declared
 inputs, so nothing could ever invalidate its entry; it runs every time, and
 `yatr check` warns if it declares `outputs`. Local entries are scoped to the
