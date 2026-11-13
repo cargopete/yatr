@@ -19,10 +19,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use blake3::Hasher;
+use console::style;
 use globset::GlobSetBuilder;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ use walkdir::WalkDir;
 use crate::config::{CacheProtocol, Config, TaskConfig};
 use crate::error::{Result, YatrError};
 use crate::globs;
+use crate::output::errln;
 use crate::reapi;
 use crate::remote::RemoteCache;
 
@@ -305,7 +308,22 @@ impl Cache {
         }
 
         let key = key.to_string();
-        let outputs = self.capture_outputs(cwd, &config.outputs)?;
+        let (outputs, matched) = self.capture_outputs(cwd, &config.outputs)?;
+        let unmatched: Vec<&str> = config
+            .outputs
+            .iter()
+            .zip(matched)
+            .filter(|(_, m)| !*m)
+            .map(|(p, _)| p.as_str())
+            .collect();
+        if !unmatched.is_empty() {
+            errln!(
+                "{} task '{task_name}': outputs pattern(s) captured no files: {}. \
+                 A cache hit will restore nothing for them",
+                style("warning:").yellow().bold(),
+                unmatched.join(", ")
+            );
+        }
 
         let result = ActionResult {
             key: key.clone(),
@@ -618,6 +636,36 @@ impl Cache {
         })
     }
 
+    /// Hash the stdout of each `tool_inputs` command, sorted so their order
+    /// does not matter. The command string and its output go in, not the
+    /// binary's path, so the key stays portable.
+    fn hash_tool_inputs(
+        hasher: &mut Hasher,
+        task_name: &str,
+        config: &TaskConfig,
+        project: &Config,
+        cwd: &Path,
+    ) -> Result<()> {
+        if config.tool_inputs.is_empty() {
+            return Ok(());
+        }
+        let env = project.task_env(config);
+        let mut commands = config.tool_inputs.clone();
+        commands.sort();
+        for cmd in &commands {
+            let stdout =
+                project
+                    .tool_outputs
+                    .run(cmd, &env, cwd)
+                    .map_err(|e| YatrError::Cache {
+                        message: format!("task '{task_name}': tool_inputs command `{cmd}` {e}"),
+                    })?;
+            Self::update_field(hasher, cmd.as_bytes());
+            Self::update_field(hasher, &stdout);
+        }
+        Ok(())
+    }
+
     /// Bumped when the shape of a stored entry or of the key changes, so
     /// entries written by an older yatr are never served.
     const KEY_VERSION: &'static [u8] = b"yatr-cache-v3";
@@ -696,6 +744,8 @@ impl Cache {
             }
         }
 
+        Self::hash_tool_inputs(&mut hasher, task_name, config, project, cwd)?;
+
         let mut deps = deps.to_vec();
         deps.sort();
         for dep in &deps {
@@ -733,7 +783,7 @@ impl Cache {
         }
         let mut hasher = Hasher::new();
         hasher.update(key.as_bytes());
-        for path in Self::collect_output_files(cwd, &config.outputs) {
+        for path in Self::collect_output_files(cwd, &config.outputs).0 {
             let rel = path.strip_prefix(cwd).unwrap_or(&path);
             Self::update_field(&mut hasher, rel.to_string_lossy().as_bytes());
             let content = std::fs::read_link(&path)
@@ -800,15 +850,7 @@ impl Cache {
             }
         };
 
-        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
-        // honours `.gitignore` outside a git checkout too.
-        for entry in WalkBuilder::new(cwd)
-            .hidden(false)
-            .require_git(false)
-            .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
-            .build()
-            .filter_map(std::result::Result::ok)
-        {
+        for entry in Self::source_walk(cwd, &bases).filter_map(std::result::Result::ok) {
             let path = entry.path();
             for (seen, base) in base_seen.iter_mut().zip(&bases) {
                 *seen |= path == base;
@@ -838,6 +880,24 @@ impl Cache {
 
         // A BTreeMap keeps the files sorted by relative path, for a deterministic hash.
         Ok((files.into_iter().collect(), matched))
+    }
+
+    /// Walk `cwd` honouring ignore files, descending only into directories on
+    /// the way to or below one of `bases`.
+    fn source_walk(cwd: &Path, bases: &[PathBuf]) -> ignore::Walk {
+        let bases = bases.to_vec();
+        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
+        // honours `.gitignore` outside a git checkout too.
+        WalkBuilder::new(cwd)
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(move |e| {
+                !Self::never_walked(Path::new(e.file_name()))
+                    && bases
+                        .iter()
+                        .any(|b| b.starts_with(e.path()) || e.path().starts_with(b))
+            })
+            .build()
     }
 
     fn never_walked(rel: &Path) -> bool {
@@ -877,10 +937,16 @@ impl Cache {
         Ok(hasher.finalize().to_hex().to_string())
     }
 
-    /// Capture the files matched by the output patterns into the CAS.
-    fn capture_outputs(&self, cwd: &Path, patterns: &[String]) -> Result<Vec<OutputEntry>> {
+    /// Capture the files matched by the output patterns into the CAS, with a
+    /// per-pattern flag saying whether that pattern captured anything.
+    fn capture_outputs(
+        &self,
+        cwd: &Path,
+        patterns: &[String],
+    ) -> Result<(Vec<OutputEntry>, Vec<bool>)> {
         let mut entries = Vec::new();
-        for path in Self::collect_output_files(cwd, patterns) {
+        let (files, matched) = Self::collect_output_files(cwd, patterns);
+        for path in files {
             let Ok(rel) = path.strip_prefix(cwd) else {
                 continue;
             };
@@ -901,7 +967,7 @@ impl Cache {
             });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(entries)
+        Ok((entries, matched))
     }
 
     /// Restore captured outputs to disk. Returns `false` if any blob is
@@ -979,7 +1045,21 @@ impl Cache {
     /// Unlike source hashing this does **not** consult `.gitignore` — declared
     /// outputs (`target/`, `dist/`, …) are routinely gitignored and must still
     /// be captured. Symlinks below a declared output are kept as symlinks.
-    fn collect_output_files(cwd: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    /// Also returns, per pattern, whether it matched any file.
+    fn collect_output_files(cwd: &Path, patterns: &[String]) -> (Vec<PathBuf>, Vec<bool>) {
+        let mut files = Vec::new();
+        let mut matched = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let before = files.len();
+            Self::collect_pattern_outputs(cwd, pattern, &mut files);
+            matched.push(files.len() > before);
+        }
+        files.sort();
+        files.dedup();
+        (files, matched)
+    }
+
+    fn collect_pattern_outputs(cwd: &Path, pattern: &str, files: &mut Vec<PathBuf>) {
         fn walk_dir_files(root: &Path, out: &mut Vec<PathBuf>) {
             for entry in WalkDir::new(root)
                 .follow_links(false)
@@ -993,47 +1073,41 @@ impl Cache {
             }
         }
 
-        let mut files = Vec::new();
-        for pattern in patterns {
-            let (base, literal) = globs::literal_base(pattern);
-            let base = cwd.join(base);
-            if literal {
-                if cfg!(unix) && base.is_symlink() {
-                    files.push(base);
-                } else if base.is_dir() {
-                    walk_dir_files(&base, &mut files);
-                } else if base.is_file() {
-                    files.push(base);
-                }
-                continue;
+        let (base, literal) = globs::literal_base(pattern);
+        let base = cwd.join(base);
+        if literal {
+            if cfg!(unix) && base.is_symlink() {
+                files.push(base);
+            } else if base.is_dir() {
+                walk_dir_files(&base, files);
+            } else if base.is_file() {
+                files.push(base);
             }
-            let Ok(glob) = globs::compile(pattern) else {
+            return;
+        }
+        let Ok(glob) = globs::compile(pattern) else {
+            return;
+        };
+        let glob = glob.compile_matcher();
+        let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
+        while let Some(entry) = walk.next() {
+            let Ok(entry) = entry else {
                 continue;
             };
-            let glob = glob.compile_matcher();
-            let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
-            while let Some(entry) = walk.next() {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let Ok(rel) = entry.path().strip_prefix(cwd) else {
-                    continue;
-                };
-                if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
-                    continue;
-                }
-                let ft = entry.file_type();
-                if ft.is_dir() {
-                    walk_dir_files(entry.path(), &mut files);
-                    walk.skip_current_dir();
-                } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
-                    files.push(entry.into_path());
-                }
+            let Ok(rel) = entry.path().strip_prefix(cwd) else {
+                continue;
+            };
+            if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
+                continue;
+            }
+            let ft = entry.file_type();
+            if ft.is_dir() {
+                walk_dir_files(entry.path(), files);
+                walk.skip_current_dir();
+            } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
+                files.push(entry.into_path());
             }
         }
-        files.sort();
-        files.dedup();
-        files
     }
 
     /// Store a blob in the CAS, returning its BLAKE3 digest. Idempotent.
@@ -1095,6 +1169,69 @@ impl Cache {
     /// Path for a CAS blob.
     fn cas_path(&self, blob: &str) -> PathBuf {
         self.dir.join("cas").join(blob)
+    }
+}
+
+type ToolOutput = Arc<OnceLock<std::result::Result<Vec<u8>, String>>>;
+type ToolKey = (String, Vec<(String, String)>, PathBuf);
+
+/// The stdout of each `tool_inputs` command, memoised per invocation.
+///
+/// Keyed on everything that can change what runs: the command, the
+/// environment it sees and, for a program named by path, the directory it is
+/// resolved against.
+#[derive(Debug, Default)]
+pub struct ToolOutputs(Mutex<HashMap<ToolKey, ToolOutput>>);
+
+impl ToolOutputs {
+    fn run(
+        &self,
+        cmd: &str,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) -> std::result::Result<Vec<u8>, String> {
+        let parts = crate::executor::Executor::parse_command(cmd, false);
+        let Some(program) = parts.first() else {
+            return Err("is empty".to_string());
+        };
+        let by_path = program.contains('/') || program.contains('\\');
+        let mut env_key: Vec<_> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        env_key.sort();
+        let key = (
+            cmd.to_string(),
+            env_key,
+            if by_path {
+                cwd.to_path_buf()
+            } else {
+                PathBuf::new()
+            },
+        );
+        let slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_default()
+            .clone();
+        slot.get_or_init(|| {
+            let out = std::process::Command::new(program)
+                .args(&parts[1..])
+                .current_dir(cwd)
+                .envs(env)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("could not run: {e}"))?;
+            if out.status.success() {
+                Ok(out.stdout)
+            } else {
+                Err(format!(
+                    "failed ({}): {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        })
+        .clone()
     }
 }
 
@@ -1382,6 +1519,47 @@ mod tests {
         assert_eq!(base, key(&project("26.11.1", "/usr/bin", "/home/b/tc/bin")));
     }
 
+    /// Regression (#46): a `tool_inputs` command's stdout is a key input, and
+    /// a command shared by several tasks runs once per invocation.
+    #[cfg(unix)]
+    #[test]
+    fn test_tool_input_output_is_a_key_input() {
+        use std::os::unix::fs::PermissionsExt;
+        let work = tempfile::tempdir().unwrap();
+        let tool = work.path().join("tool");
+        let write_tool = |version: &str| {
+            std::fs::write(
+                &tool,
+                format!("#!/bin/sh\necho run >> runs\necho {version}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let task: TaskConfig =
+            toml::from_str("run = [\"true\"]\ntool_inputs = [\"./tool --version\"]\n").unwrap();
+        let other: TaskConfig =
+            toml::from_str("run = [\"false\"]\ntool_inputs = [\"./tool --version\"]\n").unwrap();
+        let key =
+            |p: &Config, t: &TaskConfig| Cache::compute_key("t", t, p, &[], work.path()).unwrap();
+
+        write_tool("v1");
+        let first = Config::default();
+        let v1 = key(&first, &task);
+        key(&first, &other);
+        assert_eq!(
+            std::fs::read_to_string(work.path().join("runs")).unwrap(),
+            "run\n"
+        );
+        assert_eq!(v1, key(&Config::default(), &task));
+
+        write_tool("v2");
+        assert_ne!(v1, key(&Config::default(), &task));
+
+        let broken: TaskConfig =
+            toml::from_str("run = [\"true\"]\ntool_inputs = [\"./missing\"]\n").unwrap();
+        assert!(Cache::compute_key("t", &broken, &Config::default(), &[], work.path()).is_err());
+    }
+
     #[test]
     fn test_dependency_fingerprint_is_a_key_input() {
         let work = tempfile::tempdir().unwrap();
@@ -1393,6 +1571,30 @@ mod tests {
         assert_eq!(
             key(&["a".into(), "b".into()]),
             key(&["b".into(), "a".into()])
+        );
+    }
+
+    /// Regression (#47): only the patterns' literal bases are walked.
+    #[test]
+    fn test_source_walk_stays_inside_literal_bases() {
+        let work = tempfile::tempdir().unwrap();
+        for dir in ["src/a", "junk/deep", "srcx"] {
+            std::fs::create_dir_all(work.path().join(dir)).unwrap();
+            std::fs::write(work.path().join(dir).join("f"), b"x").unwrap();
+        }
+        let bases = [work.path().join("src")];
+        let walked: Vec<PathBuf> = Cache::source_walk(work.path(), &bases)
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path().strip_prefix(work.path()).unwrap().to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                PathBuf::from("src"),
+                PathBuf::from("src/a"),
+                PathBuf::from("src/a/f")
+            ]
         );
     }
 

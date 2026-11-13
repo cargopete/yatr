@@ -15,6 +15,23 @@ env_inputs = ["CLANG", "PATH"]   # a different compiler on PATH busts the key
 run = ["./build.sh"]
 ```
 
+A tool's version is not an input by default: a task keys on the command string,
+not on which binary it resolves to. Name a command in `tool_inputs` and its
+stdout joins the key, so upgrading the tool re-runs the task:
+
+```toml
+[tasks.drift]
+sources = ["nuthatch.toml", "schema/**"]
+tool_inputs = ["nuthatch --version"]
+run = ["nuthatch schema", "git diff --exit-code"]
+```
+
+Each command runs directly, not through a shell, in the task's directory and
+environment (so a pinned `[toolchain]` is on `PATH`). It runs once per yatr
+invocation however many tasks name it, and a command that fails stops the run.
+Only the command string and its stdout are hashed, never the binary's path, so
+keys stay portable to a remote cache.
+
 A task's key also folds in the keys of its `depends`, so a dependent re-runs
 whenever a dependency's inputs change. A dependency that is not cached
 contributes the contents of its declared `outputs` as well.
@@ -42,12 +59,20 @@ out of wildcard matches. A pattern whose literal path is itself ignored, such as
 `gen/schema.json` or `web/dist/**`, names generated input on purpose and is
 hashed regardless. Outputs ignore `.gitignore` entirely.
 
+Only each pattern's literal base is walked: `src/**` reads `src/` and nothing
+beside it, however large. A pattern that starts with a wildcard, such as
+`**/*.rs`, walks the whole task directory.
+
 ## Outputs are captured and restored
 
 On success, the files matched by `outputs` are stored in a content-addressed
 store. On a **cache hit, they're restored** — delete `target/`, get a hit, and
 your artifacts come back. (Many runners "cache" only stdout and leave you with
 nothing on disk; yatr restores the real outputs.)
+
+An `outputs` pattern that captures no files after a successful run is reported
+with a warning, since a hit would then restore nothing for it; the result is
+still cached. `yatr check` cannot tell, as outputs exist only after a run.
 
 Restored files keep their permission bits, so a cached binary is still
 executable, and symlinks come back as symlinks (on Unix). Each file is written

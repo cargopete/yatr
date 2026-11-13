@@ -43,6 +43,11 @@ pub struct Config {
     #[serde(skip)]
     #[schemars(skip)]
     pub toolchain_bins: Vec<PathBuf>,
+
+    /// Outputs of `tool_inputs` commands, run once per invocation.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub tool_outputs: std::sync::Arc<crate::cache::ToolOutputs>,
 }
 
 /// A pinned, auto-downloaded language toolchain.
@@ -209,6 +214,12 @@ pub struct TaskConfig {
     /// Names of ambient environment variables whose values are cache inputs
     #[serde(default)]
     pub env_inputs: Vec<String>,
+
+    /// Commands whose stdout is a cache input, such as `nuthatch --version`.
+    /// Each runs directly, not through a shell, in the task's directory and
+    /// environment, once per yatr invocation.
+    #[serde(default)]
+    pub tool_inputs: Vec<String>,
 
     /// Working directory for this task
     #[serde(default)]
@@ -437,7 +448,7 @@ impl Config {
 
     /// Merge environment variables for a task (global + task-specific).
     ///
-    /// Values expand `$VAR` and `${VAR}` (`$$` is a literal `$`). Global values
+    /// Values expand as [`expand_vars`] describes. Global values
     /// see the process environment; task values also see the global ones.
     #[must_use]
     pub fn task_env(&self, task: &TaskConfig) -> HashMap<String, String> {
@@ -480,9 +491,28 @@ impl Config {
     }
 }
 
-/// Expand `$NAME` and `${NAME}` in `value` via `lookup`; unset names expand
-/// to nothing, as in `sh`. `$$` is a literal `$`, as is a `$` that starts no name.
+/// Expand `$NAME`, `${NAME}`, `${NAME:-default}` and `${NAME-default}` in `value`.
+///
+/// Names resolve via `lookup`, as in `sh`: unset names expand to nothing, `:-` takes
+/// the default when the name is unset or empty, `-` only when unset. `$$` is a
+/// literal `$`, as is a `$` that starts no name; any other `${...}` is kept as is.
 pub fn expand_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    expand(value, lookup, &mut Vec::new())
+}
+
+/// The `${...}` forms in `value` that [`expand_vars`] keeps as literal text.
+#[must_use]
+pub fn unsupported_expansions(value: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    expand(value, &|_| None, &mut found);
+    found
+}
+
+fn expand(
+    value: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    unsupported: &mut Vec<String>,
+) -> String {
     let is_name = |c: char| c == '_' || c.is_ascii_alphanumeric();
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -493,14 +523,32 @@ pub fn expand_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Stri
             out.push('$');
             rest = tail;
         } else if let Some(braced) = after.strip_prefix('{') {
-            match braced.find('}') {
-                Some(end) if end > 0 && braced[..end].chars().all(is_name) => {
-                    out.push_str(&lookup(&braced[..end]).unwrap_or_default());
-                    rest = &braced[end + 1..];
-                }
-                _ => {
-                    out.push('$');
-                    rest = after;
+            let Some(end) = closing_brace(braced) else {
+                out.push('$');
+                rest = after;
+                continue;
+            };
+            let inner = &braced[..end];
+            rest = &braced[end + 1..];
+            let (name, op) = inner.split_at(inner.find(|c| !is_name(c)).unwrap_or(inner.len()));
+            let default = if name.is_empty() {
+                None
+            } else if op.is_empty() {
+                out.push_str(&lookup(name).unwrap_or_default());
+                continue;
+            } else if let Some(default) = op.strip_prefix(":-") {
+                Some((default, lookup(name).filter(|v| !v.is_empty())))
+            } else {
+                op.strip_prefix('-').map(|default| (default, lookup(name)))
+            };
+            match default {
+                Some((_, Some(v))) => out.push_str(&v),
+                Some((default, None)) => out.push_str(&expand(default, lookup, unsupported)),
+                None => {
+                    unsupported.push(format!("${{{inner}}}"));
+                    out.push_str("${");
+                    out.push_str(inner);
+                    out.push('}');
                 }
             }
         } else {
@@ -518,6 +566,26 @@ pub fn expand_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Stri
     }
     out.push_str(rest);
     out
+}
+
+/// The index of the `}` closing a `${`, skipping nested `${...}` and `$$`.
+fn closing_brace(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match (bytes[i], bytes.get(i + 1)) {
+            (b'$', Some(b'$' | b'{')) => {
+                depth += usize::from(bytes[i + 1] == b'{');
+                i += 1;
+            }
+            (b'}', _) if depth == 0 => return Some(i),
+            (b'}', _) => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The first shell-only construct in `cmd`: redirection, pipe, chaining or expansion.
@@ -704,6 +772,47 @@ mod tests {
         assert_eq!(expand_vars("a$UNSET-b", &lookup), "a-b");
         assert_eq!(expand_vars("cost $$5 $ ${", &lookup), "cost $5 $ ${");
         assert_eq!(expand_vars("$1x", &lookup), "$1x");
+    }
+
+    /// Regression (#45): `${VAR:-default}` and `${VAR-default}` give defaults.
+    #[test]
+    fn env_values_expand_defaults() {
+        let lookup = |name: &str| match name {
+            "SET" => Some("v".to_string()),
+            "EMPTY" => Some(String::new()),
+            "HOME" => Some("/home/me".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_vars("${SET:-d}", &lookup), "v");
+        assert_eq!(expand_vars("${UNSET:-d}", &lookup), "d");
+        assert_eq!(expand_vars("${EMPTY:-d}", &lookup), "d");
+        assert_eq!(expand_vars("${EMPTY-d}", &lookup), "");
+        assert_eq!(expand_vars("${UNSET-d}", &lookup), "d");
+        assert_eq!(expand_vars("${UNSET:-}", &lookup), "");
+        assert_eq!(expand_vars("${UNSET:-$HOME/x}", &lookup), "/home/me/x");
+        assert_eq!(expand_vars("${UNSET:-${HOME}/x}y", &lookup), "/home/me/xy");
+        assert_eq!(expand_vars("${UNSET:-a b}", &lookup), "a b");
+        assert_eq!(expand_vars("${SET:=d}", &lookup), "${SET:=d}");
+    }
+
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn unsupported_expansions_are_reported() {
+        assert!(unsupported_expansions("${A} ${A:-x} ${A-x} $$ ${").is_empty());
+        assert_eq!(
+            unsupported_expansions("${A:=x} ${#A} ${A:-${B%x}} ${}"),
+            ["${A:=x}", "${#A}", "${B%x}", "${}"]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn global_env_default_is_overridable() {
+        let config: Config = toml::from_str(
+            "[env]\nYATR_T45 = \"${YATR_T45:-fallback}\"\n[tasks.t]\nrun = [\"x\"]\n",
+        )
+        .unwrap();
+        assert_eq!(config.task_env(&config.tasks["t"])["YATR_T45"], "fallback");
     }
 
     #[test]

@@ -1173,7 +1173,7 @@ impl Executor {
     }
 
     /// Parse a command string into parts
-    fn parse_command(cmd: &str, use_shell: bool) -> Vec<String> {
+    pub(crate) fn parse_command(cmd: &str, use_shell: bool) -> Vec<String> {
         if use_shell {
             return vec![cmd.to_string()];
         }
