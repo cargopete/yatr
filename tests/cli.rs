@@ -372,7 +372,7 @@ fn sourceless_task_is_not_cached() {
 fn identical_tasks_in_two_projects_do_not_share_local_entries() {
     let shared = tempfile::tempdir().unwrap();
     let toml = format!(
-        "[settings]\ncache_dir = \"{}\"\n[tasks.gate]\nrun = [\"test -f ok\"]\nsources = [\"yatr.toml\"]\n",
+        "[settings]\ncache_dir = '{}'\n[tasks.gate]\nrun = [\"test -f ok\"]\nsources = [\"yatr.toml\"]\n",
         shared.path().display()
     );
     let a = tempfile::tempdir().unwrap();
@@ -390,10 +390,15 @@ fn identical_tasks_in_two_projects_do_not_share_local_entries() {
 /// are all inputs to the key, not just the task's own `env`.
 #[test]
 fn merged_and_declared_env_bust_the_key() {
+    let echo = if cfg!(windows) {
+        "echo MODE=%MODE% FOO=%FOO%"
+    } else {
+        "echo MODE=$MODE FOO=$FOO"
+    };
     let toml = |mode: &str| {
         format!(
             "[env]\nMODE = \"{mode}\"\n[tasks.show]\nshell = true\n\
-             run = [\"echo MODE=$MODE FOO=$FOO\"]\nsources = [\"input\"]\nenv_inputs = [\"FOO\"]\n"
+             run = [\"{echo}\"]\nsources = [\"input\"]\nenv_inputs = [\"FOO\"]\n"
         )
     };
     let p = yatr_project(&toml("one"));
