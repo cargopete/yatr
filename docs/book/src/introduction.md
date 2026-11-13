@@ -7,7 +7,7 @@ Yet another task runner. But this one's actually good.
 ```bash
 yatr test          # Run tests
 yatr build         # Build with dependencies
-yatr --watch test  # Re-run on file changes
+yatr watch test    # Re-run on file changes
 ```
 
 yatr is a fast, single-binary, polyglot task runner with a cache that actually

@@ -78,7 +78,8 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub cache: bool,
 
-    /// Cache directory (defaults to .yatr/cache)
+    /// Cache directory (defaults to the OS user cache directory, e.g.
+    /// `~/.cache/yatr` on Linux or `~/Library/Caches/yatr` on macOS)
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
 
@@ -199,6 +200,10 @@ pub struct TaskConfig {
     /// Task-specific environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    /// Names of ambient environment variables whose values are cache inputs
+    #[serde(default)]
+    pub env_inputs: Vec<String>,
 
     /// Working directory for this task
     #[serde(default)]
