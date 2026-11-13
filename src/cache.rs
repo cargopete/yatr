@@ -17,19 +17,20 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use blake3::Hasher;
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use crate::config::{CacheProtocol, TaskConfig};
+use crate::config::{CacheProtocol, Config, TaskConfig};
 use crate::error::{Result, YatrError};
+use crate::globs;
 use crate::reapi;
 use crate::remote::RemoteCache;
 
@@ -39,6 +40,12 @@ use crate::remote::RemoteCache;
 pub struct OutputEntry {
     pub path: String,
     pub blob: String,
+    /// Unix permission bits, restored on a hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    /// The output is a symlink and the blob holds its target, not contents.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub symlink: bool,
 }
 
 /// The result of executing a task, stored in the action cache.
@@ -144,29 +151,30 @@ impl Cache {
         self.enabled
     }
 
-    /// Look up a cached result for a task and, on a hit, restore its outputs.
+    /// Whether a task's results are cached at all. A task without `sources`
+    /// has no declared inputs, so nothing could ever invalidate its entry.
+    #[must_use]
+    pub const fn caches(task: &TaskConfig) -> bool {
+        !task.no_cache && !task.sources.is_empty()
+    }
+
+    /// Look up a cached result under `key` (from [`Cache::compute_key`]) and,
+    /// on a hit, restore its outputs.
     ///
     /// Returns `None` (a miss) when there is no entry, the entry is for a
     /// different task, or any recorded output blob is missing — in which case
     /// the caller should run the task for real.
-    pub async fn get(
-        &self,
-        task_name: &str,
-        config: &TaskConfig,
-        cwd: &Path,
-    ) -> Result<Option<String>> {
+    pub async fn get(&self, task_name: &str, key: &str, cwd: &Path) -> Result<Option<String>> {
         if !self.enabled {
             return Ok(None);
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
-
         // Local action cache first.
-        let result = if let Some(result) = self.load_local_ac(&key, task_name) {
+        let result = if let Some(result) = self.load_local_ac(key, task_name, cwd) {
             Some(result)
         } else {
             // Local miss: try the remote, populating the local cache on a hit.
-            self.fetch_from_remote(&key, task_name, cwd).await
+            self.fetch_from_remote(key, task_name, cwd).await
         };
 
         let Some(result) = result else {
@@ -183,8 +191,8 @@ impl Cache {
     }
 
     /// Load and validate a local action-cache entry for `key`.
-    fn load_local_ac(&self, key: &str, task_name: &str) -> Option<ActionResult> {
-        let bytes = std::fs::read(self.ac_path(key)).ok()?;
+    fn load_local_ac(&self, key: &str, task_name: &str, cwd: &Path) -> Option<ActionResult> {
+        let bytes = std::fs::read(self.ac_path(key, cwd)).ok()?;
         self.extract_verified(&bytes, task_name)
     }
 
@@ -275,7 +283,7 @@ impl Cache {
         }
 
         // Persist the action result locally for next time.
-        Self::write_atomic(&self.ac_path(key), &ac_bytes).ok()?;
+        Self::write_atomic(&self.ac_path(key, cwd), &ac_bytes).ok()?;
         Some(result)
     }
 
@@ -283,6 +291,7 @@ impl Cache {
     pub async fn put(
         &self,
         task_name: &str,
+        key: &str,
         config: &TaskConfig,
         cwd: &Path,
         stdout: &str,
@@ -292,7 +301,7 @@ impl Cache {
             return Ok(());
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
+        let key = key.to_string();
         let outputs = self.capture_outputs(cwd, &config.outputs)?;
 
         let result = ActionResult {
@@ -313,7 +322,7 @@ impl Cache {
         };
         let bytes = serde_json::to_vec_pretty(&signed).map_err(|e| Self::ser_err(&e))?;
 
-        Self::write_atomic(&self.ac_path(&key), &bytes)?;
+        Self::write_atomic(&self.ac_path(&key, cwd), &bytes)?;
 
         // Write-through to the remote (non-fatal).
         self.upload_to_remote(&key, &signed.result, bytes, cwd)
@@ -378,13 +387,21 @@ impl Cache {
     ) {
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let mut files = Vec::new();
+        let mut symlinks = Vec::new();
         for entry in &result.outputs {
             let Ok(bytes) = std::fs::read(self.cas_path(&entry.blob)) else {
                 return;
             };
+            if entry.symlink {
+                symlinks.push(reapi::OutputSymlink {
+                    path: entry.path.clone(),
+                    target: String::from_utf8_lossy(&bytes).into_owned(),
+                });
+                continue;
+            }
             let digest = reapi::sha256_hex(&bytes);
             let size = bytes.len() as u64;
-            let executable = Self::is_executable(&cwd.join(&entry.path));
+            let executable = entry.mode.is_some_and(|m| m & 0o111 != 0);
             if !remote.has_cas(&digest).await.unwrap_or(false) {
                 if let Err(e) = remote.put_cas(&digest, bytes).await {
                     tracing::warn!("reapi blob upload failed: {e}");
@@ -400,6 +417,7 @@ impl Cache {
         }
         let ar = reapi::ActionResult {
             output_files: files,
+            output_symlinks: symlinks,
             exit_code: 0,
             stdout: result.stdout.clone().into_bytes(),
         };
@@ -442,6 +460,15 @@ impl Cache {
                 Self::set_executable(&dest);
             }
         }
+        for l in &ar.output_symlinks {
+            let dest = cwd.join(&l.path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).ok()?;
+            }
+            let tmp = Self::tmp_path(&dest);
+            Self::make_symlink(&l.target, &tmp).ok()?;
+            std::fs::rename(&tmp, &dest).ok()?;
+        }
 
         Some(ActionResult {
             key: key.to_string(),
@@ -452,17 +479,6 @@ impl Cache {
             stdout: String::from_utf8_lossy(&ar.stdout).into_owned(),
             outputs: Vec::new(),
         })
-    }
-
-    #[cfg(unix)]
-    fn is_executable(path: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-    }
-
-    #[cfg(not(unix))]
-    fn is_executable(_path: &Path) -> bool {
-        false
     }
 
     #[cfg(unix)]
@@ -481,13 +497,12 @@ impl Cache {
     /// Invalidate the cached entry for a specific task + input combination.
     // Async by design: a remote (REAPI) backend will perform network I/O here.
     #[allow(clippy::unused_async)]
-    pub async fn invalidate(&self, task_name: &str, config: &TaskConfig, cwd: &Path) -> Result<()> {
+    pub async fn invalidate(&self, key: &str, cwd: &Path) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
-        let ac_path = self.ac_path(&key);
+        let ac_path = self.ac_path(key, cwd);
         if ac_path.exists() {
             std::fs::remove_file(&ac_path)?;
         }
@@ -576,10 +591,25 @@ impl Cache {
         })
     }
 
-    /// Compute the cache key for a task.
-    fn compute_key(task_name: &str, config: &TaskConfig, cwd: &Path) -> Result<String> {
+    /// Bumped when the shape of a stored entry or of the key changes, so
+    /// entries written by an older yatr are never served.
+    const KEY_VERSION: &'static [u8] = b"yatr-cache-v3";
+
+    /// Compute the cache key for a task of `project`, given the
+    /// [`Cache::fingerprint`]s of its dependencies.
+    ///
+    /// The key is portable: it holds nothing machine-specific, so a remote
+    /// cache can share it. Local entries are scoped to `cwd` on top of it.
+    pub fn compute_key(
+        task_name: &str,
+        config: &TaskConfig,
+        project: &Config,
+        deps: &[String],
+        cwd: &Path,
+    ) -> Result<String> {
         let mut hasher = Hasher::new();
 
+        hasher.update(Self::KEY_VERSION);
         hasher.update(task_name.as_bytes());
 
         for cmd in &config.run {
@@ -601,12 +631,54 @@ impl Cache {
         }
         hasher.update(&[u8::from(config.shell.unwrap_or(false))]);
 
-        // Environment variables (sorted for stability).
-        let mut env_pairs: Vec<_> = config.env.iter().collect();
+        // The environment the task runs with: global `[env]` merged with its
+        // own. Pinned toolchains put their bin dirs ahead of the ambient PATH,
+        // so that PATH is left out and the pins themselves stand in for it.
+        let env = project.task_env(config);
+        let injected_path = (!project.toolchain.is_empty())
+            .then(|| project.env.get("PATH"))
+            .flatten();
+        let mut env_pairs: Vec<_> = env
+            .iter()
+            .filter(|(k, v)| !(k.as_str() == "PATH" && Some(*v) == injected_path))
+            .collect();
         env_pairs.sort_by_key(|(k, _)| *k);
         for (k, v) in env_pairs {
-            hasher.update(k.as_bytes());
-            hasher.update(v.as_bytes());
+            Self::update_field(&mut hasher, k.as_bytes());
+            Self::update_field(&mut hasher, v.as_bytes());
+        }
+
+        let mut toolchains: Vec<_> = project.toolchain.iter().collect();
+        toolchains.sort_by_key(|(k, _)| *k);
+        for (name, tc) in toolchains {
+            for part in [
+                Some(name.as_str()),
+                Some(tc.version.as_str()),
+                Some(tc.url.as_str()),
+                tc.bin.as_deref(),
+                tc.sha256.as_deref(),
+            ] {
+                Self::update_field(&mut hasher, part.unwrap_or_default().as_bytes());
+            }
+        }
+
+        // Declared ambient inputs; unset hashes differently from empty.
+        let mut env_inputs = config.env_inputs.clone();
+        env_inputs.sort();
+        for name in &env_inputs {
+            Self::update_field(&mut hasher, name.as_bytes());
+            match std::env::var_os(name) {
+                Some(v) => Self::update_field(&mut hasher, v.as_encoded_bytes()),
+                None => {
+                    hasher.update(&[0xff]);
+                }
+            }
+        }
+
+        let mut deps = deps.to_vec();
+        deps.sort();
+        for dep in &deps {
+            Self::update_field(&mut hasher, dep.as_bytes());
         }
 
         // Declared output patterns (sorted) — changing them changes the action.
@@ -625,6 +697,33 @@ impl Cache {
         Ok(hasher.finalize().to_hex()[..16].to_string())
     }
 
+    fn update_field(hasher: &mut Hasher, bytes: &[u8]) {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+
+    /// What a dependent folds into its key for this task: its key, plus the
+    /// contents of its outputs when it is not cached, since then the key
+    /// alone does not capture what it produced.
+    #[must_use]
+    pub fn fingerprint(key: &str, config: &TaskConfig, cwd: &Path) -> String {
+        if Self::caches(config) {
+            return key.to_string();
+        }
+        let mut hasher = Hasher::new();
+        hasher.update(key.as_bytes());
+        for path in Self::collect_output_files(cwd, &config.outputs) {
+            let rel = path.strip_prefix(cwd).unwrap_or(&path);
+            Self::update_field(&mut hasher, rel.to_string_lossy().as_bytes());
+            let content = std::fs::read_link(&path)
+                .map(|t| t.to_string_lossy().into_owned().into_bytes())
+                .or_else(|_| std::fs::read(&path))
+                .unwrap_or_default();
+            Self::update_field(&mut hasher, &content);
+        }
+        hasher.finalize().to_hex()[..16].to_string()
+    }
+
     /// Directories never walked when collecting sources, no matter what the
     /// patterns say. Both hold state that changes underneath a task without
     /// the task's inputs having changed: `.git` moves on every commit, and
@@ -637,11 +736,16 @@ impl Cache {
     /// anything. Hidden entries are walked: a `sources` glob pointing at
     /// `.github/`, `.cargo/` or similar is a legitimate declared input, and
     /// skipping it silently collapsed the cache key (see `hash_sources`).
+    ///
+    /// `.gitignore` keeps build artifacts out of wildcard matches, but a
+    /// pattern whose literal path is itself ignored (`gen/schema.json`,
+    /// `web/dist/**`) names generated input on purpose, so it is walked
+    /// without ignore rules.
     fn collect_sources(cwd: &Path, patterns: &[String]) -> Result<SourceMatches> {
         let mut builder = GlobSetBuilder::new();
         let mut per_pattern = Vec::with_capacity(patterns.len());
         for pattern in patterns {
-            let glob = Glob::new(pattern).map_err(|e| YatrError::Cache {
+            let glob = globs::compile(pattern).map_err(|e| YatrError::Cache {
                 message: format!("Invalid glob pattern '{pattern}': {e}"),
             })?;
             per_pattern.push(glob.compile_matcher());
@@ -650,41 +754,77 @@ impl Cache {
         let globset = builder.build().map_err(|e| YatrError::Cache {
             message: format!("Failed to build glob set: {e}"),
         })?;
+        let bases: Vec<PathBuf> = patterns
+            .iter()
+            .map(|p| cwd.join(globs::literal_base(p).0))
+            .collect();
+        let mut base_seen = vec![false; patterns.len()];
 
-        // `hidden(false)` walks dotfiles and dot-directories; `.gitignore` is
-        // still honoured, so build artifacts and node_modules stay out.
-        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
         let mut matched = vec![false; patterns.len()];
+        let mut consider = |path: &Path, only: Option<usize>| {
+            let Ok(rel) = path.strip_prefix(cwd) else {
+                return;
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let mut hit = false;
+            for (i, m) in per_pattern.iter().enumerate() {
+                if only.is_none_or(|o| o == i) && m.is_match(&rel_str) {
+                    matched[i] = true;
+                    hit = true;
+                }
+            }
+            if hit {
+                files.insert(rel_str, path.to_path_buf());
+            }
+        };
+
+        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
+        // honours `.gitignore` outside a git checkout too.
         for entry in WalkBuilder::new(cwd)
             .hidden(false)
-            .filter_entry(|e| {
-                !Self::NEVER_WALKED
-                    .iter()
-                    .any(|skip| e.file_name() == std::ffi::OsStr::new(skip))
-            })
+            .require_git(false)
+            .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
             .build()
             .filter_map(std::result::Result::ok)
         {
             let path = entry.path();
-            if !path.is_file() {
-                continue;
+            for (seen, base) in base_seen.iter_mut().zip(&bases) {
+                *seen |= path == base;
             }
-            let Ok(rel) = path.strip_prefix(cwd) else {
-                continue;
-            };
-            if globset.is_match(rel) {
-                for (i, m) in per_pattern.iter().enumerate() {
-                    if m.is_match(rel) {
-                        matched[i] = true;
-                    }
-                }
-                files.push((rel.to_string_lossy().into_owned(), path.to_path_buf()));
+            if path.is_file() && globset.is_match(path.strip_prefix(cwd).unwrap_or(path)) {
+                consider(path, None);
             }
         }
 
-        // Sort by relative path for a deterministic hash.
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok((files, matched))
+        for (i, base) in bases.iter().enumerate() {
+            if base_seen[i]
+                || !base.exists()
+                || Self::never_walked(base.strip_prefix(cwd).unwrap_or(base))
+            {
+                continue;
+            }
+            for entry in WalkDir::new(base)
+                .into_iter()
+                .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
+                .filter_map(std::result::Result::ok)
+            {
+                if entry.path().is_file() {
+                    consider(entry.path(), Some(i));
+                }
+            }
+        }
+
+        // A BTreeMap keeps the files sorted by relative path, for a deterministic hash.
+        Ok((files.into_iter().collect(), matched))
+    }
+
+    fn never_walked(rel: &Path) -> bool {
+        rel.components().any(|c| {
+            Self::NEVER_WALKED
+                .iter()
+                .any(|skip| c.as_os_str() == std::ffi::OsStr::new(skip))
+        })
     }
 
     /// The `sources` patterns that match no file under `cwd`. A pattern that
@@ -723,11 +863,20 @@ impl Cache {
             let Ok(rel) = path.strip_prefix(cwd) else {
                 continue;
             };
-            let content = std::fs::read(&path)?;
+            let meta = std::fs::symlink_metadata(&path)?;
+            let symlink = cfg!(unix) && meta.file_type().is_symlink();
+            let (content, mode) = if symlink {
+                let target = std::fs::read_link(&path)?;
+                (target.to_string_lossy().into_owned().into_bytes(), None)
+            } else {
+                (std::fs::read(&path)?, Self::mode_of(&meta))
+            };
             let blob = self.store_blob(&content)?;
             entries.push(OutputEntry {
                 path: rel.to_string_lossy().into_owned(),
                 blob,
+                mode,
+                symlink,
             });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -737,25 +886,78 @@ impl Cache {
     /// Restore captured outputs to disk. Returns `false` if any blob is
     /// missing, signalling an incomplete (unusable) cache entry.
     fn restore_outputs(&self, cwd: &Path, outputs: &[OutputEntry]) -> Result<bool> {
+        if outputs.iter().any(|e| !self.cas_path(&e.blob).exists()) {
+            return Ok(false);
+        }
         for entry in outputs {
             let blob_path = self.cas_path(&entry.blob);
-            if !blob_path.exists() {
-                return Ok(false);
-            }
             let dest = cwd.join(&entry.path);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&blob_path, &dest)?;
+            // Built beside the destination and renamed over it, so an existing
+            // output is replaced rather than written through (a symlink, or a
+            // binary that is running).
+            let tmp = Self::tmp_path(&dest);
+            if entry.symlink {
+                Self::make_symlink(&std::fs::read_to_string(&blob_path)?, &tmp)?;
+            } else {
+                std::fs::copy(&blob_path, &tmp)?;
+                if let Some(mode) = entry.mode {
+                    Self::set_mode(&tmp, mode)?;
+                }
+            }
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.into());
+            }
         }
         Ok(true)
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::unnecessary_wraps)] // `None` off unix
+    fn mode_of(meta: &std::fs::Metadata) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o7777)
+    }
+
+    #[cfg(not(unix))]
+    const fn mode_of(_meta: &std::fs::Metadata) -> Option<u32> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn make_symlink(target: &str, link: &Path) -> Result<()> {
+        std::os::unix::fs::symlink(target, link)?;
+        Ok(())
+    }
+
+    // Symlinks are only captured on unix; an entry from a unix remote lands as a copy.
+    #[cfg(not(unix))]
+    fn make_symlink(target: &str, link: &Path) -> Result<()> {
+        let src = link.parent().unwrap_or(Path::new(".")).join(target);
+        std::fs::copy(src, link)?;
+        Ok(())
     }
 
     /// Enumerate the concrete files produced by a set of output patterns.
     ///
     /// Unlike source hashing this does **not** consult `.gitignore` — declared
     /// outputs (`target/`, `dist/`, …) are routinely gitignored and must still
-    /// be captured.
+    /// be captured. Symlinks below a declared output are kept as symlinks.
     fn collect_output_files(cwd: &Path, patterns: &[String]) -> Vec<PathBuf> {
         fn walk_dir_files(root: &Path, out: &mut Vec<PathBuf>) {
             for entry in WalkDir::new(root)
@@ -763,7 +965,8 @@ impl Cache {
                 .into_iter()
                 .filter_map(std::result::Result::ok)
             {
-                if entry.file_type().is_file() {
+                let ft = entry.file_type();
+                if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
                     out.push(entry.into_path());
                 }
             }
@@ -771,16 +974,39 @@ impl Cache {
 
         let mut files = Vec::new();
         for pattern in patterns {
-            let full = cwd.join(pattern);
-            if full.is_dir() {
-                walk_dir_files(&full, &mut files);
-            } else if let Ok(paths) = glob::glob(&full.to_string_lossy()) {
-                for p in paths.filter_map(std::result::Result::ok) {
-                    if p.is_dir() {
-                        walk_dir_files(&p, &mut files);
-                    } else if p.is_file() {
-                        files.push(p);
-                    }
+            let (base, literal) = globs::literal_base(pattern);
+            let base = cwd.join(base);
+            if literal {
+                if cfg!(unix) && base.is_symlink() {
+                    files.push(base);
+                } else if base.is_dir() {
+                    walk_dir_files(&base, &mut files);
+                } else if base.is_file() {
+                    files.push(base);
+                }
+                continue;
+            }
+            let Ok(glob) = globs::compile(pattern) else {
+                continue;
+            };
+            let glob = glob.compile_matcher();
+            let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
+            while let Some(entry) = walk.next() {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let Ok(rel) = entry.path().strip_prefix(cwd) else {
+                    continue;
+                };
+                if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
+                    continue;
+                }
+                let ft = entry.file_type();
+                if ft.is_dir() {
+                    walk_dir_files(entry.path(), &mut files);
+                    walk.skip_current_dir();
+                } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
+                    files.push(entry.into_path());
                 }
             }
         }
@@ -804,18 +1030,29 @@ impl Cache {
     /// unique per call (pid + counter) so concurrent writers of the same target
     /// don't collide on the temp file.
     fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp.{}.{n}", std::process::id()));
+        let tmp = Self::tmp_path(path);
         std::fs::write(&tmp, content)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
-    /// Path for an action-cache entry.
-    fn ac_path(&self, key: &str) -> PathBuf {
-        self.dir.join("ac").join(format!("{key}.json"))
+    fn tmp_path(path: &Path) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.with_extension(format!("tmp.{}.{n}", std::process::id()))
+    }
+
+    /// Path for a local action-cache entry. The cache directory is shared by
+    /// every project on the machine, so the entry is scoped to the task's
+    /// directory; only the remote key is shared across checkouts.
+    fn ac_path(&self, key: &str, cwd: &Path) -> PathBuf {
+        let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let mut hasher = Hasher::new();
+        hasher.update(key.as_bytes());
+        hasher.update(dir.as_os_str().as_encoded_bytes());
+        let local = &hasher.finalize().to_hex()[..16];
+        self.dir.join("ac").join(format!("{local}.json"))
     }
 
     /// Path for a CAS blob.
@@ -860,6 +1097,10 @@ impl std::fmt::Display for CacheStats {
 mod tests {
     use super::*;
 
+    fn key_of(name: &str, config: &TaskConfig, cwd: &Path) -> String {
+        Cache::compute_key(name, config, &Config::default(), &[], cwd).unwrap()
+    }
+
     fn task_with(sources: &[&str], outputs: &[&str]) -> TaskConfig {
         let toml = format!(
             "run = [\"true\"]\nsources = [{}]\noutputs = [{}]\n",
@@ -887,6 +1128,7 @@ mod tests {
         cache
             .put(
                 "test",
+                &key_of("test", &config, work.path()),
                 &config,
                 work.path(),
                 "hello world",
@@ -895,7 +1137,10 @@ mod tests {
             .await
             .unwrap();
 
-        let output = cache.get("test", &config, work.path()).await.unwrap();
+        let output = cache
+            .get("test", &key_of("test", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(output, Some("hello world".to_string()));
     }
 
@@ -914,6 +1159,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "built",
@@ -926,7 +1172,10 @@ mod tests {
         std::fs::remove_dir_all(work.path().join("dist")).unwrap();
         assert!(!artifact.exists());
 
-        let output = cache.get("build", &config, work.path()).await.unwrap();
+        let output = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(output, Some("built".to_string()));
         assert!(
             artifact.exists(),
@@ -946,17 +1195,33 @@ mod tests {
 
         let config = task_with(&["input.txt"], &[]);
         cache
-            .put("t", &config, work.path(), "out-v1", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "out-v1",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("out-v1".to_string())
         );
 
         // Mutating the source must change the key → miss.
         std::fs::write(&src, b"v2").unwrap();
-        assert_eq!(cache.get("t", &config, work.path()).await.unwrap(), None);
+        assert_eq!(
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     /// A `sources` glob under a dot-directory must be hashed like any other.
@@ -974,17 +1239,30 @@ mod tests {
 
         let config = task_with(&[".config/f.json"], &[]);
         cache
-            .put("t", &config, work.path(), "out-v1", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "out-v1",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("out-v1".to_string())
         );
 
         std::fs::write(dir.join("f.json"), b"v2").unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             None,
             "changing a dot-path source must bust the key"
         );
@@ -1007,12 +1285,22 @@ mod tests {
 
         let config = task_with(&[".plugin/manifest.json"], &[]);
         cache
-            .put("manifest", &config, a.path(), "out-a", Duration::ZERO)
+            .put(
+                "manifest",
+                &key_of("manifest", &config, a.path()),
+                &config,
+                a.path(),
+                "out-a",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
         assert_eq!(
-            cache.get("manifest", &config, b.path()).await.unwrap(),
+            cache
+                .get("manifest", &key_of("manifest", &config, b.path()), b.path())
+                .await
+                .unwrap(),
             None,
             "project b must not be served project a's cached output"
         );
@@ -1033,6 +1321,39 @@ mod tests {
         let after = Cache::hash_sources(work.path(), &["**/*".to_string()]).unwrap();
 
         assert_eq!(before, after, "a change inside .git must not move the key");
+    }
+
+    /// A toolchain pin is a key input; the PATH yatr derives from it (which
+    /// also carries the ambient PATH) is not.
+    #[test]
+    fn test_toolchain_pin_is_a_key_input() {
+        let work = tempfile::tempdir().unwrap();
+        let task = task_with(&[], &[]);
+        let project = |version: &str, path: &str| -> Config {
+            toml::from_str(&format!(
+                "[env]\nPATH = \"{path}\"\n[toolchain.node]\nversion = \"{version}\"\nurl = \"https://example.com/{{version}}.tgz\"\n"
+            ))
+            .unwrap()
+        };
+        let key = |p: &Config| Cache::compute_key("t", &task, p, &[], work.path()).unwrap();
+
+        let base = key(&project("26.11.1", "/tc/bin:/usr/bin"));
+        assert_ne!(base, key(&project("24.11.1", "/tc/bin:/usr/bin")));
+        assert_eq!(base, key(&project("26.11.1", "/tc/bin:/opt/homebrew/bin")));
+    }
+
+    #[test]
+    fn test_dependency_fingerprint_is_a_key_input() {
+        let work = tempfile::tempdir().unwrap();
+        let task = task_with(&[], &[]);
+        let key = |deps: &[String]| {
+            Cache::compute_key("t", &task, &Config::default(), deps, work.path()).unwrap()
+        };
+        assert_ne!(key(&["a".into()]), key(&["b".into()]));
+        assert_eq!(
+            key(&["a".into(), "b".into()]),
+            key(&["b".into(), "a".into()])
+        );
     }
 
     /// Zero-match source patterns are the symptom `yatr check` should surface.
@@ -1061,18 +1382,41 @@ mod tests {
 
         let config = task_with(&[], &[]);
         cache
-            .put("a", &config, work.path(), "x", Duration::ZERO)
+            .put(
+                "a",
+                &key_of("a", &config, work.path()),
+                &config,
+                work.path(),
+                "x",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         cache
-            .put("b", &config, work.path(), "y", Duration::ZERO)
+            .put(
+                "b",
+                &key_of("b", &config, work.path()),
+                &config,
+                work.path(),
+                "y",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
         assert_eq!(cache.clear_task("a").unwrap(), 1);
-        assert_eq!(cache.get("a", &config, work.path()).await.unwrap(), None);
         assert_eq!(
-            cache.get("b", &config, work.path()).await.unwrap(),
+            cache
+                .get("a", &key_of("a", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            cache
+                .get("b", &key_of("b", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("y".to_string())
         );
     }
@@ -1098,7 +1442,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"remote-bytes").to_hex().to_string();
 
         let ac = SignedAc {
@@ -1113,6 +1457,8 @@ mod tests {
                 outputs: vec![OutputEntry {
                     path: "out.txt".into(),
                     blob: blob.clone(),
+                    mode: None,
+                    symlink: false,
                 }],
             },
         };
@@ -1135,14 +1481,17 @@ mod tests {
             .with_remote(Some(remote));
 
         // Local is empty; the hit must come from the remote and restore the output.
-        let out = cache.get("build", &config, work.path()).await.unwrap();
+        let out = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(out, Some("from-remote".to_string()));
         assert_eq!(
             std::fs::read(work.path().join("out.txt")).unwrap(),
             b"remote-bytes"
         );
         // And the action result is now cached locally for next time.
-        assert!(cache.ac_path(&key).exists());
+        assert!(cache.ac_path(&key, work.path()).exists());
     }
 
     #[tokio::test]
@@ -1156,7 +1505,7 @@ mod tests {
 
         std::fs::write(work.path().join("artifact.bin"), b"payload").unwrap();
         let config = task_with(&[], &["artifact.bin"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"payload").to_hex().to_string();
 
         // Remote doesn't have the blob yet → expect an upload of blob + action.
@@ -1186,6 +1535,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "out",
@@ -1208,11 +1558,21 @@ mod tests {
 
         let config = task_with(&[], &[]);
         cache
-            .put("t", &config, work.path(), "signed-output", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "signed-output",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("signed-output".to_string())
         );
     }
@@ -1227,7 +1587,14 @@ mod tests {
         Cache::new(Some(cache_dir.path().to_path_buf()))
             .unwrap()
             .with_signing_key(Some(Cache::derive_key("key-A")))
-            .put("t", &config, work.path(), "x", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "x",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
@@ -1235,7 +1602,13 @@ mod tests {
         let reader = Cache::new(Some(cache_dir.path().to_path_buf()))
             .unwrap()
             .with_signing_key(Some(Cache::derive_key("key-B")));
-        assert_eq!(reader.get("t", &config, work.path()).await.unwrap(), None);
+        assert_eq!(
+            reader
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1248,7 +1621,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"genuine").to_hex().to_string();
 
         let ac = SignedAc {
@@ -1263,6 +1636,8 @@ mod tests {
                 outputs: vec![OutputEntry {
                     path: "out.txt".into(),
                     blob: blob.clone(),
+                    mode: None,
+                    symlink: false,
                 }],
             },
         };
@@ -1287,7 +1662,10 @@ mod tests {
 
         // Integrity check must reject the tampered blob → miss, nothing restored.
         assert_eq!(
-            cache.get("build", &config, work.path()).await.unwrap(),
+            cache
+                .get("build", &key_of("build", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             None
         );
         assert!(!work.path().join("out.txt").exists());
@@ -1303,7 +1681,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let content = b"reapi bytes";
         let digest = reapi::sha256_hex(content);
@@ -1316,6 +1694,7 @@ mod tests {
                 size: content.len() as u64,
                 executable: false,
             }],
+            output_symlinks: vec![],
             exit_code: 0,
             stdout: b"from-reapi".to_vec(),
         };
@@ -1339,7 +1718,10 @@ mod tests {
             .unwrap()
             .with_remote(Some(RemoteCache::from_config(&cfg).unwrap()));
 
-        let out = cache.get("build", &config, work.path()).await.unwrap();
+        let out = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(out, Some("from-reapi".to_string()));
         assert_eq!(std::fs::read(work.path().join("out.txt")).unwrap(), content);
     }
@@ -1355,7 +1737,7 @@ mod tests {
         std::fs::write(work.path().join("art.bin"), b"payload").unwrap();
 
         let config = task_with(&[], &["art.bin"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let digest = reapi::sha256_hex(b"payload");
 
@@ -1386,6 +1768,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "out",

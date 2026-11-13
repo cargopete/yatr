@@ -22,13 +22,19 @@ Commands:
 yatr run [TASKS]... [OPTIONS]
   --dry-run            Show the execution plan without running
   --force              Ignore the cache
-  --parallel <N>       Limit parallelism (0 = auto)
+  --parallel <N>       Limit parallelism (0 = `[settings] parallelism`, else CPU count)
   --shell              Use a shell to execute commands
   --json               Structured JSON output instead of human output
   --profile <PATH>     Write a Chrome trace of the run
   --affected <GIT_REF> Only run tasks affected by changes since the ref
   --trace-io           Warn when a task writes outside its declared `outputs`
+  -k, --keep-going     After a failure, let tasks that do not depend on it finish
 ```
+
+The bare form `yatr [OPTIONS] [TASKS]...` is shorthand for `yatr run` and takes
+the same options, before or after the task names. Every name is checked before
+anything runs, and several names are planned as one graph, so a shared
+dependency runs once.
 
 ## Global options
 

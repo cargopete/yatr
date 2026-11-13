@@ -14,8 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
 
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 use ignore::WalkBuilder;
+
+use crate::globs;
 
 /// A cheap fingerprint of the working tree: relative path -> (mtime, size).
 pub type Snapshot = HashMap<String, (SystemTime, u64)>;
@@ -52,7 +54,7 @@ pub fn snapshot(cwd: &Path) -> Snapshot {
 pub fn undeclared_writes(before: &Snapshot, after: &Snapshot, outputs: &[String]) -> Vec<String> {
     let mut builder = GlobSetBuilder::new();
     for o in outputs {
-        if let Ok(g) = Glob::new(o) {
+        if let Ok(g) = globs::compile(o) {
             builder.add(g);
         }
     }
@@ -62,6 +64,7 @@ pub fn undeclared_writes(before: &Snapshot, after: &Snapshot, outputs: &[String]
         // A literal output, a file under a declared output directory, or a glob match.
         outputs
             .iter()
+            .map(|o| globs::normalise(o).trim_end_matches('/'))
             .any(|o| rel == o || rel.starts_with(&format!("{o}/")))
             || globs.as_ref().is_some_and(|g| g.is_match(rel))
     };

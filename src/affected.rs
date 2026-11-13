@@ -14,9 +14,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 
 use crate::error::{Result, YatrError};
+use crate::globs;
 use crate::graph::TaskGraph;
 
 /// List files changed since `git_ref`, relative to the current directory.
@@ -68,7 +69,7 @@ pub fn affected_tasks(graph: &TaskGraph, changed: &[String], root: &Path) -> Has
         } else {
             let mut builder = GlobSetBuilder::new();
             for p in patterns {
-                if let Ok(g) = Glob::new(p) {
+                if let Ok(g) = globs::compile(p) {
                     builder.add(g);
                 }
             }

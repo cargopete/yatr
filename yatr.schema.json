@@ -218,6 +218,14 @@
             "type": "string"
           }
         },
+        "env_inputs": {
+          "description": "Names of ambient environment variables whose values are cache inputs",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "foreground": {
           "description": "Run in foreground with inherited stdio (for long-running processes like dev servers)",
           "default": false,

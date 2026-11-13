@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobSet, GlobSetBuilder};
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use tokio::sync::mpsc;
@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::error::{Result, YatrError};
 use crate::executor::{Executor, ExecutorConfig};
+use crate::globs;
 use crate::graph::TaskGraph;
 
 /// File watcher for tasks
@@ -26,6 +27,8 @@ pub struct TaskWatcher {
     rx: mpsc::Receiver<Vec<PathBuf>>,
     /// Glob patterns to watch
     patterns: GlobSet,
+    /// Watched directories; patterns match paths relative to these
+    roots: Vec<PathBuf>,
     /// Task to re-run
     task_name: String,
 }
@@ -38,7 +41,7 @@ impl TaskWatcher {
         // Build glob set
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
-            let glob = Glob::new(pattern).map_err(|e| YatrError::Watch {
+            let glob = globs::compile(pattern).map_err(|e| YatrError::Watch {
                 source: notify::Error::generic(&format!("Invalid glob '{pattern}': {e}")),
             })?;
             builder.add(glob);
@@ -64,6 +67,7 @@ impl TaskWatcher {
             debouncer,
             rx,
             patterns,
+            roots: Vec::new(),
             task_name: task_name.to_string(),
         })
     }
@@ -75,6 +79,10 @@ impl TaskWatcher {
                 .watcher()
                 .watch(path, RecursiveMode::Recursive)
                 .map_err(|e| YatrError::Watch { source: e })?;
+            self.roots.push(path.clone());
+            if let Ok(real) = std::fs::canonicalize(path) {
+                self.roots.push(real);
+            }
         }
         Ok(())
     }
@@ -87,7 +95,12 @@ impl TaskWatcher {
             // Filter to only matching paths
             let matching: Vec<PathBuf> = paths
                 .into_iter()
-                .filter(|p| self.patterns.is_match(p))
+                .filter(|p| {
+                    self.roots
+                        .iter()
+                        .find_map(|r| p.strip_prefix(r).ok())
+                        .is_some_and(|rel| self.patterns.is_match(rel))
+                })
                 .collect();
 
             if !matching.is_empty() {
