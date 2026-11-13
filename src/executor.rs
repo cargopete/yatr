@@ -14,6 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
 use crate::config::Config;
@@ -35,7 +36,12 @@ pub struct TaskResult {
     pub error: Option<String>,
     /// Exit code of the failing command, when the task failed
     pub exit_code: Option<i32>,
+    /// Stopped because another task failed or yatr was interrupted
+    pub cancelled: bool,
 }
+
+/// How long a cancelled task gets between SIGTERM and SIGKILL.
+const KILL_GRACE: Duration = Duration::from_secs(3);
 
 /// Everything a task printed, stdout and stderr together.
 #[derive(Clone, Default)]
@@ -57,6 +63,14 @@ impl Capture {
 }
 
 /// Echoes a running task's lines to the terminal, prefixed with its name.
+/// What one scheduled run of a task carries besides the task itself.
+struct TaskRun<'a> {
+    dep_keys: &'a [String],
+    fingerprints: &'a Fingerprints,
+    echo: Option<Echo>,
+    cancel: CancellationToken,
+}
+
 #[derive(Clone)]
 struct Echo {
     prefix: String,
@@ -114,6 +128,154 @@ impl Sink {
     }
 }
 
+/// What a task's commands run under: where output goes, and when to stop.
+#[derive(Clone)]
+struct Ctx {
+    task: String,
+    sink: Sink,
+    cancel: CancellationToken,
+    timeout: Option<u64>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl Ctx {
+    /// Resolves when the task must stop: cancelled, or out of time.
+    async fn stopped(&self) -> YatrError {
+        let deadline = async {
+            match self.deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            () = self.cancel.cancelled() => YatrError::Cancelled,
+            () = deadline => YatrError::TimedOut {
+                task: self.task.clone(),
+                seconds: self.timeout.unwrap_or_default(),
+            },
+        }
+    }
+}
+
+/// Kills a child (and, for a non-foreground command, its whole process group)
+/// if dropped before the child is known to have finished.
+struct Reaper {
+    pid: Option<u32>,
+    group: bool,
+    armed: bool,
+}
+
+impl Reaper {
+    #[cfg(unix)]
+    fn signal(&self, signal: nix::sys::signal::Signal) {
+        let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok()) else {
+            return;
+        };
+        let pid = nix::unistd::Pid::from_raw(pid);
+        let _ = if self.group {
+            nix::sys::signal::killpg(pid, signal)
+        } else {
+            nix::sys::signal::kill(pid, signal)
+        };
+    }
+
+    /// SIGTERM, a grace period, then SIGKILL for whatever is left in the group.
+    async fn terminate(&mut self, child: &mut tokio::process::Child) {
+        #[cfg(unix)]
+        {
+            self.signal(nix::sys::signal::Signal::SIGTERM);
+            let _ = tokio::time::timeout(KILL_GRACE, child.wait()).await;
+            self.signal(nix::sys::signal::Signal::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        self.armed = false;
+    }
+}
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.armed {
+            self.signal(nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+}
+
+/// SIGINT and SIGTERM, routed to whichever runs are in progress.
+mod signals {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
+
+    use tokio::sync::watch;
+
+    struct Hub {
+        tx: watch::Sender<Option<i32>>,
+        active: AtomicUsize,
+    }
+
+    static HUB: OnceLock<Hub> = OnceLock::new();
+
+    /// Deregisters a run when dropped.
+    pub struct Active;
+
+    impl Drop for Active {
+        fn drop(&mut self) {
+            if let Some(hub) = HUB.get() {
+                hub.active.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Start receiving signals for a run. With no run in progress a signal
+    /// exits yatr as it would have done without a handler installed.
+    pub fn subscribe() -> (watch::Receiver<Option<i32>>, Active) {
+        let hub = HUB.get_or_init(|| {
+            tokio::spawn(listen());
+            Hub {
+                tx: watch::channel(None).0,
+                active: AtomicUsize::new(0),
+            }
+        });
+        hub.active.fetch_add(1, Ordering::SeqCst);
+        (hub.tx.subscribe(), Active)
+    }
+
+    fn deliver(signal: i32) {
+        let Some(hub) = HUB.get() else { return };
+        if hub.active.load(Ordering::SeqCst) == 0 {
+            std::process::exit(128 + signal);
+        }
+        hub.tx.send_replace(Some(signal));
+    }
+
+    #[cfg(unix)]
+    async fn listen() {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (Ok(mut int), Ok(mut term)) = (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::terminate()),
+        ) else {
+            return;
+        };
+        loop {
+            let signal = tokio::select! {
+                _ = int.recv() => 2,
+                _ = term.recv() => 15,
+            };
+            deliver(signal);
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn listen() {
+        while tokio::signal::ctrl_c().await.is_ok() {
+            deliver(2);
+        }
+    }
+}
+
 /// Copy one of a child's output streams into the sink, line by line.
 async fn pump(stream: impl tokio::io::AsyncRead + Unpin, sink: Sink, to_stderr: bool) {
     use tokio::io::AsyncBufReadExt;
@@ -155,6 +317,8 @@ pub struct ExecutorConfig {
     pub trace_io: bool,
     /// Reference instant for the whole run, used to compute task start offsets
     pub run_start: Instant,
+    /// After a failure, let tasks that do not depend on it finish
+    pub keep_going: bool,
 }
 
 impl Default for ExecutorConfig {
@@ -169,6 +333,7 @@ impl Default for ExecutorConfig {
             json: false,
             trace_io: false,
             run_start: Instant::now(),
+            keep_going: false,
         }
     }
 }
@@ -222,13 +387,7 @@ impl Executor {
             return Ok(());
         }
 
-        let parallelism = if self.exec_config.parallelism == 0 {
-            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
-        } else {
-            self.exec_config.parallelism
-        };
-
-        let semaphore = Arc::new(Semaphore::new(parallelism));
+        let semaphore = Arc::new(Semaphore::new(self.parallelism()));
         let multi_progress = MultiProgress::new();
         let name_width = tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
 
@@ -239,6 +398,8 @@ impl Executor {
         // Cache fingerprints of finished tasks, folded into their dependents' keys.
         let fingerprints: Arc<Fingerprints> = Arc::default();
 
+        let cancel = CancellationToken::new();
+
         // Build the future that runs one task, gated by the concurrency semaphore.
         let spawn_one = |name: &str| {
             let task = node_map[name].clone();
@@ -247,6 +408,7 @@ impl Executor {
             let exec_config = self.exec_config.clone();
             let cache = self.cache.clone();
             let mp = multi_progress.clone();
+            let cancel = cancel.clone();
             let fingerprints = Arc::clone(&fingerprints);
             let dep_keys = Self::dep_fingerprints(graph, name, &fingerprints);
             async move {
@@ -255,71 +417,111 @@ impl Executor {
                         "Semaphore acquire failed: {e}"
                     )))
                 })?;
-
-                // Progress spinner is human-only; suppress it in JSON mode.
-                let pb = (!exec_config.json).then(|| {
-                    let pb = mp.add(ProgressBar::new_spinner());
-                    let style = ProgressStyle::default_spinner()
-                        .template("{spinner:.cyan} {msg}")
-                        .unwrap_or_else(|_| ProgressStyle::default_spinner());
-                    pb.set_style(style);
-                    pb.set_message(format!("Running {}", task.name));
-                    pb.enable_steady_tick(Duration::from_millis(100));
-                    pb
-                });
-
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 let echo = (!exec_config.json).then(|| Echo {
                     prefix: format!("{} ", style(format!("{:<name_width$} │", task.name)).dim()),
                     progress: mp.clone(),
                 });
-                let result = Self::execute_single_task(
+                Self::run_one(
                     &task,
                     &config,
                     &exec_config,
                     cache.as_ref(),
-                    &dep_keys,
-                    &fingerprints,
-                    echo,
+                    &mp,
+                    TaskRun {
+                        dep_keys: &dep_keys,
+                        fingerprints: &fingerprints,
+                        echo,
+                        cancel,
+                    },
                 )
-                .await;
-
-                if let Some(pb) = pb {
-                    pb.finish_and_clear();
-                }
-                result
+                .await
+                .map(Some)
             }
         };
 
+        self.schedule(
+            graph,
+            &spawn_one,
+            &mut in_degree,
+            &dependents,
+            &cancel,
+            all_results,
+        )
+        .await
+    }
+
+    /// The ready-queue loop: collect finished tasks, start those they unblock,
+    /// and stop the rest on a failure or a signal.
+    async fn schedule<F, Fut>(
+        &self,
+        graph: &TaskGraph,
+        spawn_one: &F,
+        in_degree: &mut HashMap<String, usize>,
+        dependents: &HashMap<String, Vec<String>>,
+        cancel: &CancellationToken,
+        all_results: &mut Vec<TaskResult>,
+    ) -> Result<()>
+    where
+        F: Fn(&str) -> Fut + Sync,
+        Fut: std::future::Future<Output = Result<Option<TaskResult>>> + Send + 'static,
+    {
         let mut running = JoinSet::new();
-        for name in node_map.keys() {
-            if in_degree[name] == 0 {
+        for (name, remaining) in in_degree.iter() {
+            if *remaining == 0 {
                 running.spawn(spawn_one(name));
             }
         }
 
         let first = all_results.len();
-        while let Some(joined) = running.join_next().await {
-            let result =
-                joined.map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??;
+        let (mut signals, _active) = signals::subscribe();
+        let mut interrupted = None;
+        let mut failure = None;
+        loop {
+            let joined = tokio::select! {
+                joined = running.join_next() => match joined {
+                    Some(joined) => joined,
+                    None => break,
+                },
+                Ok(()) = signals.changed(), if interrupted.is_none() => {
+                    interrupted = *signals.borrow();
+                    cancel.cancel();
+                    continue;
+                }
+            };
+            let Some(result) =
+                joined.map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??
+            else {
+                continue;
+            };
 
-            let success = result.success;
             let finished = result.name.clone();
-            let allow_failure = graph
-                .get_task(&finished)
-                .is_some_and(|t| t.config.allow_failure);
+            let failed = !result.success
+                && !result.cancelled
+                && !graph
+                    .get_task(&finished)
+                    .is_some_and(|t| t.config.allow_failure);
 
             if !self.exec_config.json {
                 Self::print_task_result(&result);
             }
-            all_results.push(result);
-
-            if !success && !allow_failure {
-                let code = all_results.last().and_then(|r| r.exit_code).unwrap_or(1);
-                return Err(YatrError::TaskFailed {
-                    task: finished,
-                    code,
+            if failed && failure.is_none() {
+                failure = Some(YatrError::TaskFailed {
+                    task: finished.clone(),
+                    code: result.exit_code.unwrap_or(1),
                     stderr: None,
                 });
+            }
+            let ran = !result.cancelled && !failed;
+            all_results.push(result);
+
+            if failed && !self.exec_config.keep_going {
+                cancel.cancel();
+            }
+            if !ran || cancel.is_cancelled() {
+                continue;
             }
 
             // Unblock dependents whose final dependency just completed.
@@ -336,9 +538,51 @@ impl Executor {
         }
 
         if !self.exec_config.json {
-            self.print_summary(&all_results[first..]);
+            self.print_summary(&all_results[first..], in_degree.len());
         }
-        Ok(())
+        match (interrupted, failure) {
+            (Some(signal), _) => Err(YatrError::Interrupted { signal }),
+            (None, Some(failure)) => Err(failure),
+            (None, None) => Ok(()),
+        }
+    }
+
+    /// Run one task with its spinner and output prefix.
+    async fn run_one(
+        task: &TaskNode,
+        config: &Config,
+        exec_config: &ExecutorConfig,
+        cache: Option<&Cache>,
+        mp: &MultiProgress,
+        run: TaskRun<'_>,
+    ) -> Result<TaskResult> {
+        // Progress spinner is human-only; suppress it in JSON mode.
+        let pb = (!exec_config.json).then(|| {
+            let pb = mp.add(ProgressBar::new_spinner());
+            let style = ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner());
+            pb.set_style(style);
+            pb.set_message(format!("Running {}", task.name));
+            pb.enable_steady_tick(Duration::from_millis(100));
+            pb
+        });
+
+        let result = Self::execute_single_task(task, config, exec_config, cache, run).await;
+
+        if let Some(pb) = pb {
+            pb.finish_and_clear();
+        }
+        result
+    }
+
+    /// How many tasks may run at once.
+    fn parallelism(&self) -> usize {
+        if self.exec_config.parallelism == 0 {
+            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
+        } else {
+            self.exec_config.parallelism
+        }
     }
 
     /// Build the dependency bookkeeping for the ready-queue scheduler:
@@ -408,10 +652,14 @@ impl Executor {
         config: &Config,
         exec_config: &ExecutorConfig,
         cache: Option<&Cache>,
-        dep_keys: &[String],
-        fingerprints: &Fingerprints,
-        echo: Option<Echo>,
+        run: TaskRun<'_>,
     ) -> Result<TaskResult> {
+        let TaskRun {
+            dep_keys,
+            fingerprints,
+            echo,
+            cancel,
+        } = run;
         let start = Instant::now();
         let start_offset = exec_config.run_start.elapsed();
         let env = config.task_env(&task.config);
@@ -448,6 +696,7 @@ impl Executor {
                             output: Some(cached),
                             error: None,
                             exit_code: None,
+                            cancelled: false,
                         });
                     }
                 }
@@ -464,11 +713,20 @@ impl Executor {
         let trace_before =
             (exec_config.trace_io && !task.config.foreground).then(|| crate::trace::snapshot(&cwd));
 
-        let sink = Sink {
-            capture: Capture::default(),
-            echo,
+        let ctx = Ctx {
+            task: task.name.clone(),
+            sink: Sink {
+                capture: Capture::default(),
+                echo,
+            },
+            cancel,
+            timeout: task.config.timeout,
+            deadline: task
+                .config
+                .timeout
+                .map(|secs| tokio::time::Instant::now() + Duration::from_secs(secs)),
         };
-        let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &sink).await;
+        let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &ctx).await;
 
         let duration = start.elapsed();
         record_fingerprint();
@@ -478,7 +736,7 @@ impl Executor {
             Self::report_io_trace(&task.name, &cwd, &task.config.outputs, &before);
         }
 
-        let output = sink.capture.take();
+        let output = ctx.sink.capture.take();
         match result {
             Ok(()) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
@@ -499,6 +757,7 @@ impl Executor {
                     output: Some(output),
                     error: None,
                     exit_code: None,
+                    cancelled: false,
                 })
             }
             Err(e) => Ok(TaskResult {
@@ -509,6 +768,7 @@ impl Executor {
                 cached: false,
                 output: Some(output),
                 exit_code: Some(i32::from(e.exit_code())),
+                cancelled: matches!(e, YatrError::Cancelled),
                 error: Some(e.to_string()),
             }),
         }
@@ -520,11 +780,12 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        sink: &Sink,
+        ctx: &Ctx,
     ) -> Result<()> {
+        let sink = &ctx.sink;
         if task.config.foreground {
             // Execute in foreground with inherited stdio (for long-running processes)
-            Self::execute_foreground(&task.name, &task.config.run, env, cwd, exec_config)
+            Self::execute_foreground(&task.name, &task.config.run, env, cwd, exec_config, ctx)
                 .await
                 .map(|out| sink.capture.push(&out))
         } else if let Some(wasm) = &task.config.wasm {
@@ -543,7 +804,7 @@ impl Executor {
                 env,
                 cwd,
                 exec_config,
-                sink,
+                ctx,
             )
             .await
         } else {
@@ -554,7 +815,7 @@ impl Executor {
                 env,
                 cwd,
                 exec_config,
-                sink,
+                ctx,
             )
             .await
         }
@@ -617,10 +878,10 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        sink: &Sink,
+        ctx: &Ctx,
     ) -> Result<()> {
         for cmd in commands {
-            Self::execute_command(cmd, env, cwd, exec_config, sink).await?;
+            Self::execute_command(cmd, env, cwd, exec_config, ctx).await?;
         }
         Ok(())
     }
@@ -632,6 +893,7 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
+        ctx: &Ctx,
     ) -> Result<String> {
         // Foreground tasks run with inherited stdio and block until completion
         // Only the first command is executed (foreground doesn't make sense for multiple commands)
@@ -663,7 +925,9 @@ impl Executor {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
-        let status = command.status().await?;
+        // Left in yatr's process group: it owns the terminal, so Ctrl-C reaches it directly.
+        let child = command.spawn()?;
+        let status = Self::supervise(child, false, JoinSet::new(), ctx).await?;
 
         if !status.success() {
             return Err(YatrError::CommandFailed {
@@ -682,9 +946,12 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        sink: &Sink,
+        ctx: &Ctx,
     ) -> Result<()> {
-        let mut handles = Vec::new();
+        // One failing command stops its siblings, without cancelling the run.
+        let local = ctx.cancel.child_token();
+        let mut running = JoinSet::new();
+        let mut captures = Vec::new();
 
         for cmd in commands {
             let cmd = cmd.clone();
@@ -692,29 +959,70 @@ impl Executor {
             let cwd = cwd.to_path_buf();
             let exec_config = exec_config.clone();
             let own = Capture::default();
-            let theirs = sink.with_capture(own.clone());
-
-            handles.push((
-                own,
-                tokio::spawn(async move {
-                    Self::execute_command(&cmd, &env, &cwd, &exec_config, &theirs).await
-                }),
-            ));
+            captures.push(own.clone());
+            let theirs = Ctx {
+                sink: ctx.sink.with_capture(own),
+                cancel: local.clone(),
+                ..ctx.clone()
+            };
+            running.spawn(async move {
+                Self::execute_command(&cmd, &env, &cwd, &exec_config, &theirs).await
+            });
         }
 
-        let mut first_err = None;
-        for (own, handle) in handles {
-            let result = handle
-                .await
+        let mut first_err: Option<YatrError> = None;
+        while let Some(joined) = running.join_next().await {
+            let result = joined
                 .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))
                 .and_then(|r| r);
-            sink.capture.push(&own.take());
             if let Err(e) = result {
-                first_err.get_or_insert(e);
+                local.cancel();
+                if first_err
+                    .as_ref()
+                    .is_none_or(|f| matches!(f, YatrError::Cancelled))
+                {
+                    first_err = Some(e);
+                }
             }
+        }
+        for own in captures {
+            ctx.sink.capture.push(&own.take());
         }
 
         first_err.map_or(Ok(()), Err)
+    }
+
+    /// Wait for a child and its output, killing it if the task is cancelled
+    /// or runs out of time.
+    async fn supervise(
+        mut child: tokio::process::Child,
+        group: bool,
+        mut pumps: JoinSet<()>,
+        ctx: &Ctx,
+    ) -> Result<std::process::ExitStatus> {
+        let mut reaper = Reaper {
+            pid: child.id(),
+            group,
+            armed: true,
+        };
+        let finished = async {
+            let status = child.wait().await;
+            while pumps.join_next().await.is_some() {}
+            status
+        };
+        let stop = tokio::select! {
+            status = finished => {
+                reaper.armed = false;
+                return Ok(status?);
+            }
+            stop = ctx.stopped() => stop,
+        };
+        reaper.terminate(&mut child).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            while pumps.join_next().await.is_some() {}
+        })
+        .await;
+        Err(stop)
     }
 
     /// Execute a single command
@@ -723,7 +1031,7 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        sink: &Sink,
+        ctx: &Ctx,
     ) -> Result<()> {
         let parts = Self::parse_command(cmd, exec_config.shell);
 
@@ -746,18 +1054,20 @@ impl Executor {
             .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
 
         let mut child = command.spawn()?;
         let mut pumps = JoinSet::new();
         if let Some(stdout) = child.stdout.take() {
-            pumps.spawn(pump(stdout, sink.clone(), false));
+            pumps.spawn(pump(stdout, ctx.sink.clone(), false));
         }
         if let Some(stderr) = child.stderr.take() {
-            pumps.spawn(pump(stderr, sink.clone(), true));
+            pumps.spawn(pump(stderr, ctx.sink.clone(), true));
         }
-        let status = child.wait().await?;
-        while pumps.join_next().await.is_some() {}
+        let status = Self::supervise(child, true, pumps, ctx).await?;
 
         if !status.success() {
             return Err(YatrError::CommandFailed {
@@ -844,7 +1154,9 @@ impl Executor {
 
     /// Print result of a single task
     fn print_task_result(result: &TaskResult) {
-        let status = if result.success {
+        let status = if result.cancelled {
+            style("⊘ cancelled").yellow()
+        } else if result.success {
             if result.cached {
                 style("✓ cached").green()
             } else {
@@ -863,22 +1175,24 @@ impl Executor {
             style(duration).dim()
         );
 
-        if let Some(error) = &result.error {
+        if let Some(error) = result.error.as_ref().filter(|_| !result.cancelled) {
             errln!("  {}", style(error).red());
         }
     }
 
     /// Print execution summary
     #[allow(clippy::unused_self)]
-    fn print_summary(&self, results: &[TaskResult]) {
+    fn print_summary(&self, results: &[TaskResult], planned: usize) {
         outln!();
 
         let total: Duration = results.iter().map(|r| r.duration).sum();
         let succeeded = results.iter().filter(|r| r.success).count();
-        let failed = results.iter().filter(|r| !r.success).count();
+        let cancelled = results.iter().filter(|r| r.cancelled).count();
+        let failed = results.len() - succeeded - cancelled;
         let cached = results.iter().filter(|r| r.cached).count();
+        let not_run = planned.saturating_sub(results.len());
 
-        if failed == 0 {
+        if failed + cancelled + not_run == 0 {
             outln!(
                 "{} {} tasks completed in {:.2}s ({} cached)",
                 style("✓").green().bold(),
@@ -887,11 +1201,17 @@ impl Executor {
                 cached
             );
         } else {
+            let mut parts = vec![format!("{succeeded} succeeded"), format!("{failed} failed")];
+            if cancelled > 0 {
+                parts.push(format!("{cancelled} cancelled"));
+            }
+            if not_run > 0 {
+                parts.push(format!("{not_run} not run"));
+            }
             outln!(
-                "{} {} succeeded, {} failed in {:.2}s",
+                "{} {} in {:.2}s",
                 style("✗").red().bold(),
-                succeeded,
-                failed,
+                parts.join(", "),
                 total.as_secs_f64()
             );
         }

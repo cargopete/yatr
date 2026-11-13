@@ -61,6 +61,23 @@ output is in the `output` field of the document instead.
 If yatr's stdout is closed early (`yatr test | head`), further output is dropped
 and the run carries on; the exit status still reports how the tasks went.
 
+## Failure, cancellation and timeouts
+
+Each `run` command gets its own process group. When a task fails, yatr stops the
+tasks still running: their whole process group gets SIGTERM, then SIGKILL after
+three seconds, and they are reported as cancelled. Tasks that had not started are
+not started. With `--keep-going`, tasks that do not depend on the failed one run
+to completion instead; its dependents are still skipped. yatr exits with the
+failing command's exit code.
+
+SIGINT and SIGTERM sent to yatr are forwarded the same way, and yatr then exits
+with 128 plus the signal number. A `foreground` task stays in yatr's process
+group so that it keeps the terminal.
+
+`timeout = <seconds>` bounds the whole task, across all of its commands. A task
+over time is killed as above and fails with exit code 124. It applies to `run`
+commands only; a `script` or `wasm` task is not interrupted.
+
 ## Full task reference
 
 | Field | Meaning |

@@ -15,6 +15,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A source named inside a gitignored directory is hashed rather than reported missing, and `.gitignore` is honoured outside a git checkout (#12).
 - A failing task's stdout and stderr are shown, and yatr exits with the failing command's exit code instead of always 1 (#5).
 - Task output is streamed as it runs, prefixed with the task name; stderr is kept on success, leading whitespace is preserved, and a closed stdout no longer panics (#22).
+- A failing task's running siblings are killed by process group and reported cancelled, SIGINT and SIGTERM are forwarded to task processes, and `--keep-going` lets independent tasks finish (#18).
+- The task `timeout` field is enforced for `run` commands; a task over time is killed and exits 124 (#16).
 
 ## [1.1.1] - 2026-11-13
 

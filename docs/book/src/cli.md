@@ -28,6 +28,7 @@ yatr run [TASKS]... [OPTIONS]
   --profile <PATH>     Write a Chrome trace of the run
   --affected <GIT_REF> Only run tasks affected by changes since the ref
   --trace-io           Warn when a task writes outside its declared `outputs`
+  -k, --keep-going     After a failure, let tasks that do not depend on it finish
 ```
 
 ## Global options
