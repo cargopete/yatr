@@ -160,3 +160,17 @@ fn watch_puts_toolchain_on_path() {
     let w = Watch::start_with(cmd, dir.path(), &["t"]);
     assert!(w.wait_for("FROM-TOOLCHAIN", 1), "{}", w.output());
 }
+
+/// Watch's own banner and separators are status, so they stay off stdout (#44).
+#[test]
+fn watch_banner_is_not_on_stdout() {
+    let dir = project(
+        "[settings]\nwatch_debounce_ms = 50\n[tasks.t]\nrun = [\"echo RAN\"]\nwatch = [\"src/*.txt\"]\n",
+        &["src/a.txt"],
+    );
+    let w = Watch::start(dir.path(), &["t"]);
+    assert!(w.wait_for("RAN", 1), "initial run: {}", w.output());
+    let out = w.output();
+    assert!(!out.contains("Patterns:"), "banner on stdout: {out}");
+    assert!(!out.contains('─'), "separator on stdout: {out}");
+}
