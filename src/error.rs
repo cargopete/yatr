@@ -50,6 +50,10 @@ pub enum YatrError {
         stderr: Option<String>,
     },
 
+    #[error("Command '{command}' failed with exit code {code}")]
+    #[diagnostic(code(yatr::exec::command_failed))]
+    CommandFailed { command: String, code: i32 },
+
     #[error("Command not found: {command}")]
     #[diagnostic(
         code(yatr::exec::command_not_found),
@@ -99,6 +103,19 @@ pub enum YatrError {
         #[source]
         source: notify::Error,
     },
+}
+
+impl YatrError {
+    /// The process exit code yatr should finish with for this error.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::TaskFailed { code, .. } | Self::CommandFailed { code, .. } => {
+                u8::try_from(*code).ok().filter(|c| *c != 0).unwrap_or(1)
+            }
+            _ => 1,
+        }
+    }
 }
 
 /// Result type alias for YATR operations

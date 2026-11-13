@@ -13,6 +13,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A task's cache key includes its dependencies' keys, so a dependent re-runs when a dependency's inputs change (#9).
 - `sources`, `outputs` and `watch` share one glob dialect: `*` no longer crosses `/` in sources, `outputs = ["dir/**"]` captures the tree, and a leading `./` is ignored (#11).
 - A source named inside a gitignored directory is hashed rather than reported missing, and `.gitignore` is honoured outside a git checkout (#12).
+- A failing task's stdout and stderr are shown, and yatr exits with the failing command's exit code instead of always 1 (#5).
+- Task output is streamed as it runs, prefixed with the task name; stderr is kept on success, leading whitespace is preserved, and a closed stdout no longer panics (#22).
 
 ## [1.1.1] - 2026-11-13
 

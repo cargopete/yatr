@@ -63,6 +63,7 @@ pub mod executor;
 pub mod globs;
 pub mod graph;
 pub mod lsp;
+mod output;
 pub mod reapi;
 pub mod remote;
 pub mod script;
