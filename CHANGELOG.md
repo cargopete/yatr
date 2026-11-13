@@ -6,6 +6,19 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-13
+
+Several fixes change behaviour; see **Changed** before upgrading.
+
+### Changed
+
+- Tasks without `sources` are no longer cached (#7).
+- `*` in `sources` no longer matches across `/`; use `**` for that (#11).
+- `env` values expand `$VAR` and `${VAR}`; write `$$` for a literal `$` (#24).
+- Task output streams live, prefixed with the task name (#22).
+- `yatr cache clear` clears only the current project; `--all` clears everything (#38).
+- Cache entries from 1.1.x miss once and are rebuilt.
+
 ### Fixed
 
 - Tasks without `sources` are no longer cached, and local cache entries are scoped to the project directory, so a key no longer collides across projects (#7).
