@@ -276,24 +276,19 @@ fn run_check_command(cli: &Cli) -> Result<()> {
 }
 
 /// The directory yatr was started in, in the canonical form config paths use.
-fn shell_dir() -> Result<std::path::PathBuf> {
-    let dir = std::env::current_dir()?;
-    Ok(dir.canonicalize().unwrap_or(dir))
-}
-
 fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
-    let (config, _) = Config::load(cli.config.as_deref())?;
+    let (config, config_path) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
-    let changed = affected::changed_files(git_ref)?;
-    let affected = affected::affected_tasks(&graph, &changed, &shell_dir()?);
+    let affected = affected::detect(git_ref, &config, &config_path, &graph)?;
 
-    let mut names: Vec<&str> = affected.iter().map(String::as_str).collect();
+    let mut names: Vec<&str> = affected.tasks.iter().map(String::as_str).collect();
     names.sort_unstable();
 
     match format {
         ListFormat::Json => print_json(&serde_json::json!({
             "ref": git_ref,
-            "changed_files": changed,
+            "merge_base": affected.merge_base,
+            "changed_files": affected.changed,
             "affected": names,
         }))?,
         ListFormat::Plain => {
@@ -340,19 +335,15 @@ async fn apply_toolchains(config: &mut Config) -> Result<()> {
 }
 
 async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
-    let (mut config, _) = Config::load(cli.config.as_deref())?;
-    let graph = TaskGraph::from_config(&config)?;
+    let (mut config, config_path) = Config::load(cli.config.as_deref())?;
+    let mut graph = TaskGraph::from_config(&config)?;
     graph.execution_order_all(tasks)?;
 
-    if !opts.dry_run {
-        apply_toolchains(&mut config).await?;
-    }
-
-    // --affected: keep only the requested tasks that changes since the ref touch.
+    // --affected: run only affected tasks, dependencies included; unaffected
+    // dependencies are dropped from the graph rather than run.
     let filtered: Vec<String>;
     let tasks: &[String] = if let Some(git_ref) = &opts.affected {
-        let changed = affected::changed_files(git_ref)?;
-        let set = affected::affected_tasks(&graph, &changed, &shell_dir()?);
+        let set = affected::detect(git_ref, &config, &config_path, &graph)?.tasks;
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
         if filtered.is_empty() && !opts.json {
             outln!(
@@ -360,10 +351,19 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
                 style("✓").green()
             );
         }
+        config.tasks.retain(|name, _| set.contains(name));
+        for task in config.tasks.values_mut() {
+            task.depends.retain(|d| set.contains(d));
+        }
+        graph = TaskGraph::from_config(&config)?;
         &filtered
     } else {
         tasks
     };
+
+    if !opts.dry_run {
+        apply_toolchains(&mut config).await?;
+    }
 
     // JSON dry-run: emit the execution plan rather than running anything.
     if opts.json && opts.dry_run {
