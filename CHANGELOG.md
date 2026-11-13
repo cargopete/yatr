@@ -22,6 +22,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Run options after a bare task name (`yatr deploy --dry-run`) are now options, not task names, and every requested name is validated before anything runs (#13).
 - `yatr run a b` plans one graph across all named tasks: shared dependencies run once, independent tasks run in parallel, one summary (#14).
 - The bare form now accepts the `run` options (`yatr --dry-run build`); README and book no longer document the non-existent `yatr --watch` and `yatr --shell run`, and the `cache_dir` doc names the real default (#15).
+- `yatr check` warns about tasks named after a builtin subcommand (including `help`), which the bare form cannot reach, and names `yatr run <name>` (#4).
+- `yatr init` writes `yatr.toml`, the name yatr searches for, instead of `YATR.toml`; the template links the real docs and names its aggregate task `ci` rather than the shadowed `check` (#3).
 
 ## [1.1.1] - 2026-11-13
 

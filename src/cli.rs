@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 /// YATR - Yet Another Task Runner for Rust projects
 #[derive(Parser, Debug)]
@@ -201,6 +201,17 @@ impl Cli {
             EffectiveCommand::None
         }
     }
+}
+
+/// Subcommand names, which win over a task of the same name in the bare form.
+pub fn builtin_names() -> Vec<String> {
+    let mut names: Vec<String> = Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect();
+    // clap adds `help` when the command is built, so it is not listed above.
+    names.push("help".to_string());
+    names
 }
 
 pub enum EffectiveCommand<'a> {
