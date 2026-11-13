@@ -6,9 +6,12 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-13
+
 ### Fixed
 
 - Cached outputs keep their executable bit and symlinks on restore, and a hit no longer strips the mode of an output already on disk (#10).
+- Dependency lockfile updated to clear 16 RUSTSEC advisories.
 
 ## [1.1.0] — 2026-07-15
 
