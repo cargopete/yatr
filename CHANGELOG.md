@@ -8,12 +8,18 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Cached outputs keep their executable bit and symlinks on restore, and a hit no longer strips the mode of an output already on disk (#10).
 - Tasks without `sources` are no longer cached, and local cache entries are scoped to the project directory, so a key no longer collides across projects (#7).
 - The cache key covers the global `[env]` and pinned toolchain versions, and a new `env_inputs` task key names ambient variables that are cache inputs (#8).
 - A task's cache key includes its dependencies' keys, so a dependent re-runs when a dependency's inputs change (#9).
 - `sources`, `outputs` and `watch` share one glob dialect: `*` no longer crosses `/` in sources, `outputs = ["dir/**"]` captures the tree, and a leading `./` is ignored (#11).
 - A source named inside a gitignored directory is hashed rather than reported missing, and `.gitignore` is honoured outside a git checkout (#12).
+
+## [1.1.1] - 2026-11-13
+
+### Fixed
+
+- Cached outputs keep their executable bit and symlinks on restore, and a hit no longer strips the mode of an output already on disk (#10).
+- Dependency lockfile updated to clear 16 RUSTSEC advisories.
 
 ## [1.1.0] — 2026-07-15
 
