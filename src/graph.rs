@@ -30,8 +30,12 @@ impl TaskGraph {
         let mut graph = DiGraph::new();
         let mut name_to_index = HashMap::new();
 
+        // Sorted, so that toposort (and everything printed from it) is stable.
+        let mut tasks: Vec<_> = config.tasks.iter().collect();
+        tasks.sort_unstable_by_key(|(name, _)| *name);
+
         // Add all tasks as nodes
-        for (name, task_config) in &config.tasks {
+        for &(name, task_config) in &tasks {
             let node = TaskNode {
                 name: name.clone(),
                 config: task_config.clone(),
@@ -41,7 +45,7 @@ impl TaskGraph {
         }
 
         // Add dependency edges
-        for (name, task_config) in &config.tasks {
+        for &(name, task_config) in &tasks {
             let task_idx = name_to_index[name];
 
             for dep in &task_config.depends {
@@ -195,15 +199,11 @@ impl TaskGraph {
         self.name_to_index.keys().map(std::string::String::as_str)
     }
 
-    /// Get direct dependencies of a task
+    /// Get direct dependencies of a task, in declaration order
     #[must_use]
     pub fn dependencies(&self, name: &str) -> Option<Vec<&str>> {
-        self.name_to_index.get(name).map(|&idx| {
-            self.graph
-                .neighbors_directed(idx, petgraph::Direction::Incoming)
-                .map(|dep_idx| self.graph[dep_idx].name.as_str())
-                .collect()
-        })
+        self.get_task(name)
+            .map(|task| task.config.depends.iter().map(String::as_str).collect())
     }
 
     /// Get tasks that depend on the given task

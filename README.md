@@ -166,9 +166,13 @@ Available Rhai functions:
 
 ### Caching
 
-Tasks are cached by default based on:
-- Task configuration (commands, env vars)
-- Source file contents (if `sources` specified)
+A task that declares `sources` is cached, keyed on:
+- Task configuration (commands, global and task env, pinned toolchains)
+- Source file contents
+- Ambient variables named in `env_inputs`
+- The keys of its dependencies
+
+A task with no `sources` has no declared inputs and is never cached.
 
 ```toml
 [tasks.build]
@@ -176,6 +180,10 @@ run = ["cargo build --release"]
 sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/release/myapp"]
 ```
+
+Patterns are relative to the task's directory: `*` stops at `/`, `**` crosses
+it. Sources respect `.gitignore`, except a path you name inside an ignored
+directory (`gen/schema.json`, `web/dist/**`), which is hashed anyway.
 
 Disable caching:
 
@@ -255,6 +263,7 @@ yatr run --dry-run build     # Show plan without executing
 yatr build --dry-run         # Same: the bare form takes the `run` options
 yatr run --force build       # Ignore cache
 yatr run --parallel 4 test   # Limit parallelism
+yatr run --keep-going ci     # Let independent tasks finish after a failure
 
 # List tasks
 yatr list                    # Show all tasks
@@ -598,7 +607,7 @@ KEY = "value"
 [settings]
 cache = true              # Enable caching (default: true)
 cache_dir = ".yatr"       # Cache directory
-parallelism = 0           # Max parallel tasks (0 = CPU count)
+parallelism = 0           # Max parallel tasks (0 = CPU count); --parallel overrides
 watch_debounce_ms = 300   # Watch debounce delay
 shell = "/bin/sh"         # Default shell when shell mode is enabled
 
@@ -627,6 +636,7 @@ wasm = "plugin.wasm"                 # WASM plugin (path, http(s):// or github:â
 depends = ["other-task"]             # Run these first
 parallel = false                     # Run commands in parallel
 env = { KEY = "value" }              # Task-specific env vars
+env_inputs = ["CLANG"]               # Ambient env vars that affect the cache key
 cwd = "./subdir"                     # Working directory
 shell = false                        # Use shell for commands
 foreground = true                    # Inherit stdio (dev servers); not cached
@@ -635,7 +645,7 @@ sources = ["src/**"]                 # Files affecting the cache key
 outputs = ["target/app"]             # Output files/dirs (captured & restored)
 no_cache = false                     # Disable caching for this task
 allow_failure = false                # Continue on failure
-timeout = 300                        # Timeout in seconds
+timeout = 300                        # Kill `run` commands after this many seconds
 ```
 
 A JSON Schema for all of this is shipped (`yatr schema` / [`yatr.schema.json`](yatr.schema.json))

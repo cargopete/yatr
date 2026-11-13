@@ -54,7 +54,7 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub force: bool,
 
-    /// Number of parallel tasks (0 = auto)
+    /// Number of parallel tasks (0 = `[settings] parallelism`, else CPU count)
     #[arg(short, long, default_value = "0")]
     pub parallel: usize,
 
@@ -77,6 +77,10 @@ pub struct RunArgs {
     /// Warn when a task writes files outside its declared `outputs`
     #[arg(long)]
     pub trace_io: bool,
+
+    /// After a failure, keep running tasks that do not depend on it
+    #[arg(short, long)]
+    pub keep_going: bool,
 }
 
 #[derive(Subcommand, Debug)]
