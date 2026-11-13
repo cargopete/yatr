@@ -11,6 +11,7 @@
 //! about *speed at scale* — not even looking at tasks git says can't have moved.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use globset::GlobSetBuilder;
@@ -44,9 +45,10 @@ pub fn changed_files(git_ref: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Compute the set of task names affected by the given changed files.
+/// Compute the set of task names affected by the given changed files, which
+/// are relative to `root`.
 #[must_use]
-pub fn affected_tasks(graph: &TaskGraph, changed: &[String]) -> HashSet<String> {
+pub fn affected_tasks(graph: &TaskGraph, changed: &[String], root: &Path) -> HashSet<String> {
     let mut affected: HashSet<String> = HashSet::new();
 
     // Directly affected: a task whose declared inputs match a changed file, or
@@ -71,10 +73,17 @@ pub fn affected_tasks(graph: &TaskGraph, changed: &[String]) -> HashSet<String> 
                     builder.add(g);
                 }
             }
+            // Patterns are relative to the task's working directory.
+            let wd = task.config.working_dir();
+            let relative = |f: &String| -> Option<PathBuf> {
+                wd.as_ref().map_or_else(
+                    || Some(PathBuf::from(f)),
+                    |wd| root.join(f).strip_prefix(wd).ok().map(Path::to_path_buf),
+                )
+            };
             builder
                 .build()
-                .ok()
-                .is_some_and(|set| changed.iter().any(|f| set.is_match(f)))
+                .is_ok_and(|set| changed.iter().filter_map(relative).any(|f| set.is_match(f)))
         };
 
         if is_affected {
@@ -113,7 +122,7 @@ mod tests {
             "[tasks.frontend]\nsources=[\"web/**\"]\nrun=[\"echo fe\"]\n\
              [tasks.backend]\nsources=[\"api/**\"]\nrun=[\"echo be\"]\n",
         );
-        let aff = affected_tasks(&g, &["web/index.html".to_string()]);
+        let aff = affected_tasks(&g, &["web/index.html".to_string()], Path::new("."));
         assert!(aff.contains("frontend"));
         assert!(!aff.contains("backend"));
     }
@@ -125,7 +134,7 @@ mod tests {
              [tasks.app]\ndepends=[\"lib\"]\nsources=[\"app/**\"]\nrun=[\"echo app\"]\n",
         );
         // A change in lib affects app, which depends on it.
-        let aff = affected_tasks(&g, &["lib/core.rs".to_string()]);
+        let aff = affected_tasks(&g, &["lib/core.rs".to_string()], Path::new("."));
         assert!(aff.contains("lib"));
         assert!(aff.contains("app"));
     }
@@ -136,7 +145,7 @@ mod tests {
             "[tasks.always]\nrun=[\"echo hi\"]\n\
              [tasks.scoped]\nsources=[\"src/**\"]\nrun=[\"echo scoped\"]\n",
         );
-        let aff = affected_tasks(&g, &["docs/readme.md".to_string()]);
+        let aff = affected_tasks(&g, &["docs/readme.md".to_string()], Path::new("."));
         assert!(aff.contains("always")); // no declared inputs → always affected
         assert!(!aff.contains("scoped")); // sources don't match
     }

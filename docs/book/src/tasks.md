@@ -50,6 +50,11 @@ shell = true
 run = ["diesel migration run"]
 ```
 
+A task runs in the directory of the file that declares it, or in `cwd` resolved
+against that directory. `sources`, `outputs`, `watch` and `wasm` are relative to
+the same place, so running `yatr` from a subdirectory changes nothing, and a task
+in an included file sees paths relative to that file.
+
 ## Long-running processes
 
 ```toml

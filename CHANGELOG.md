@@ -24,6 +24,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The bare form now accepts the `run` options (`yatr --dry-run build`); README and book no longer document the non-existent `yatr --watch` and `yatr --shell run`, and the `cache_dir` doc names the real default (#15).
 - `yatr check` warns about tasks named after a builtin subcommand (including `help`), which the bare form cannot reach, and names `yatr run <name>` (#4).
 - `yatr init` writes `yatr.toml`, the name yatr searches for, instead of `YATR.toml`; the template links the real docs and names its aggregate task `ci` rather than the shadowed `check` (#3).
+- Task paths (`cwd`, `sources`, `outputs`, `wasm`, affected matching) and a relative `cache_dir` resolve against the directory of the file that declares them, not the shell's, so `yatr` behaves the same from a subdirectory and included files see their own paths; a missing task `cwd` now names the path (#19).
 
 ## [1.1.1] - 2026-11-13
 

@@ -711,6 +711,26 @@ impl Executor {
         }
     }
 
+    /// The directory a task runs in: its declared `cwd` resolved against the
+    /// file that declares it, else the run's directory. It must exist.
+    fn task_cwd(task: &TaskNode, exec_config: &ExecutorConfig) -> Result<std::path::PathBuf> {
+        let cwd = task
+            .config
+            .working_dir()
+            .unwrap_or_else(|| exec_config.cwd.clone());
+        if cwd.is_dir() {
+            Ok(cwd)
+        } else {
+            Err(YatrError::InvalidConfig {
+                message: format!(
+                    "task '{}': working directory '{}' does not exist",
+                    task.name,
+                    cwd.display()
+                ),
+            })
+        }
+    }
+
     /// Execute a single task
     async fn execute_single_task(
         task: &TaskNode,
@@ -723,12 +743,7 @@ impl Executor {
         let start_offset = exec_config.run_start.elapsed();
         let env = config.task_env(&task.config);
 
-        // Determine working directory (needed for cache key + output restore)
-        let cwd = task
-            .config
-            .cwd
-            .clone()
-            .unwrap_or_else(|| exec_config.cwd.clone());
+        let cwd = Self::task_cwd(task, exec_config)?;
 
         let key = cache
             .map(|_| Cache::compute_key(&task.name, &task.config, config, run.dep_keys, &cwd))
