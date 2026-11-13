@@ -111,11 +111,11 @@ fn several_tasks_share_one_graph() {
         let log = std::fs::read_to_string(dir.path().join("log.txt")).unwrap();
         assert_eq!(log.lines().count(), 1, "{args:?}: setup ran {log:?}");
 
-        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(
-            stdout.matches("tasks completed").count(),
+            stderr.matches("tasks completed").count(),
             1,
-            "{args:?}: expected one summary: {stdout}"
+            "{args:?}: expected one summary: {stderr}"
         );
     }
 }

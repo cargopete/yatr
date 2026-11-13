@@ -74,12 +74,23 @@ run = ["cargo watch -x run"]
 
 ## Output
 
-A task's stdout and stderr are streamed as it runs, each line prefixed with the
-task's name so parallel tasks stay readable. stderr stays on stderr, and is
-shown for tasks that succeed as well as for those that fail. A cache hit replays
+A task's stdout and stderr are streamed as it runs. When a run has more than
+one task with commands, each line is prefixed with the task's name so parallel
+tasks stay readable; a run of a single task prints its output as is. stderr
+stays on stderr, and is shown for tasks that succeed as well as for those that
+fail.
+
+yatr's own status lines (`✓ build 1.20s`) and the closing summary go to stderr,
+so stdout holds only what the tasks printed: `yatr gen > out.txt` captures the
+generator's output and nothing else. The prefix does not depend on whether
+stdout is a terminal, so a multi-task run reads the same in CI as locally. A cache hit replays
 the output captured when the task last ran (all of it on stdout, since the two
 streams are stored together). With `--json` nothing is streamed; each task's
 output is in the `output` field of the document instead.
+
+A line that starts with `::` is printed without the prefix, so GitHub Actions
+workflow commands (`::error::`, `::group::`, `::endgroup::`) emitted by a task
+still annotate and fold the log.
 
 If yatr's stdout is closed early (`yatr test | head`), further output is dropped
 and the run carries on; the exit status still reports how the tasks went.
@@ -90,8 +101,12 @@ Each `run` command gets its own process group. When a task fails, yatr stops the
 tasks still running: their whole process group gets SIGTERM, then SIGKILL after
 three seconds, and they are reported as cancelled. Tasks that had not started are
 not started. With `--keep-going`, tasks that do not depend on the failed one run
-to completion instead; its dependents are still skipped. yatr exits with the
-failing command's exit code.
+to completion instead; its dependents are still skipped.
+
+When one task fails, yatr exits with its failing command's exit code. When
+`--keep-going` lets several fail, the closing error lists each of them with its
+code, in the order they failed, and yatr exits 1: no one task's code stands for
+the others. A task with `allow_failure` is not counted.
 
 SIGINT and SIGTERM sent to yatr are forwarded the same way, and yatr then exits
 with 128 plus the signal number. A `foreground` task stays in yatr's process

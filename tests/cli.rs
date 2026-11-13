@@ -421,7 +421,7 @@ fn output_keeps_leading_whitespace_live_and_cached() {
         .arg("pad")
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&cached.stdout).contains("cached"));
+    assert!(was_cached(&cached));
 }
 
 /// A reader that closes stdout early does not make yatr panic.
@@ -459,8 +459,8 @@ fn failure_cancels_running_siblings() {
         &["all"],
     );
     assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("cancelled slow"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cancelled slow"), "{stderr}");
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert!(!dir.path().join("LATE").exists(), "sibling kept running");
 }
@@ -590,7 +590,7 @@ fn summary_reports_wall_time_and_skips_aggregates() {
             .output()
             .unwrap();
         assert!(out.status.success());
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        String::from_utf8_lossy(&out.stderr).into_owned()
     };
 
     let stdout = run("all");
@@ -680,12 +680,12 @@ fn cache_hit_restores_exec_bit_and_symlinks() {
     assert!(run_yatr(p, &["mk"]).status.success());
     // Second run is a hit over the existing outputs.
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert!(was_cached(&out));
     assert_eq!(mode("out/tool"), 0o755, "a hit clobbered the exec bit");
 
     std::fs::remove_dir_all(p.join("out")).unwrap();
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert!(was_cached(&out));
     assert_eq!(mode("out/tool"), 0o755, "restored without its exec bit");
     let link = p.join("out/link");
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
@@ -715,7 +715,7 @@ fn yatr_project(toml: &str) -> tempfile::TempDir {
 }
 
 fn was_cached(out: &std::process::Output) -> bool {
-    String::from_utf8_lossy(&out.stdout).contains("✓ cached")
+    String::from_utf8_lossy(&out.stderr).contains("✓ cached")
 }
 
 /// A task with no `sources` has undeclared inputs, so it is never cached.
@@ -1017,5 +1017,160 @@ fn cache_clear_is_scoped_to_the_project() {
     assert!(
         !was_cached(&run_yatr(b.path(), &["t"])),
         "--all left b's entry"
+    );
+}
+
+/// GitHub Actions workflow commands only work at the start of a line, so they
+/// are passed through without the task-name prefix.
+#[cfg(unix)]
+#[test]
+fn workflow_commands_are_not_prefixed() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nshell = true\nno_cache = true\n\
+         run = [\"echo '::group::decode'; echo inside; echo '::error file=x.rs::bad' >&2; echo '::endgroup::'\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"echo b\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n",
+        &["all"],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"::group::decode"), "{stdout}");
+    assert!(lines.contains(&"::endgroup::"), "{stdout}");
+    assert!(
+        stderr.lines().any(|l| l == "::error file=x.rs::bad"),
+        "{stderr}"
+    );
+    assert!(lines.iter().any(|l| l.ends_with("│ inside")), "{stdout}");
+}
+
+/// stdout carries only what the task printed, so `yatr gen > file` works; a
+/// single task needs no name prefix, and status and summary go to stderr.
+#[test]
+fn single_task_stdout_is_just_its_output() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\"]\n",
+        &["gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("✓ gen"), "{stderr}");
+    assert!(stderr.contains("1 task completed"), "{stderr}");
+}
+
+/// With several tasks the prefix stays, and stdout still holds output only.
+#[test]
+fn several_tasks_keep_the_prefix_and_status_stays_off_stdout() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nno_cache = true\nrun = [\"echo from-a\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"echo from-b\"]\n",
+        &["a", "b"],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["a │ from-a", "b │ from-b"], "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("2 tasks completed"), "{stderr}");
+}
+
+/// `-q` drops status and summary but keeps the task's output and its failures.
+#[cfg(unix)]
+#[test]
+fn quiet_keeps_output_and_errors_only() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\"]\n",
+        &["-q", "gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+
+    let (_dir, out) = run_in(
+        "[tasks.bad]\nshell = true\nno_cache = true\nrun = [\"echo why >&2; exit 4\"]\n",
+        &["-q", "bad"],
+    );
+    assert_eq!(out.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("why"), "{stderr}");
+    assert!(stderr.contains("✗ bad"), "{stderr}");
+    assert!(stderr.contains("exit code 4"), "{stderr}");
+    assert!(!stderr.contains("succeeded"), "summary under -q: {stderr}");
+}
+
+/// `-v` prints each command before it runs, on stderr.
+#[test]
+fn verbose_prints_commands() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\", \"echo again\"]\n",
+        &["-v", "gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\nagain\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(lines.contains(&"$ echo hello"), "{stderr}");
+    assert!(lines.contains(&"$ echo again"), "{stderr}");
+}
+
+/// With `--keep-going` the closing error names every failed task, and several
+/// failures exit 1 rather than with whichever code came first.
+#[cfg(unix)]
+#[test]
+fn keep_going_reports_every_failure() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nno_cache = true\nrun = [\"sh -c 'exit 3'\"]\n\
+         [tasks.b]\nshell = true\nno_cache = true\nrun = [\"sleep 0.2; exit 5\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n",
+        &["all", "-k"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("2 tasks failed: a (exit code 3), b (exit code 5)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Command failed with exit code 3: sh -c 'exit 3'"),
+        "{stderr}"
+    );
+}
+
+/// `yatr check` counts in the singular for one task.
+#[test]
+fn check_says_one_task() {
+    let stdout = check_stdout("[tasks.only]\nrun = [\"true\"]\n");
+    assert!(stdout.contains("(1 task"), "{stdout}");
+    assert!(!stdout.contains("1 tasks"), "{stdout}");
+}
+
+/// The dry-run plan shows the settings that change how a task runs.
+#[test]
+fn dry_run_plan_shows_run_modes() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nshell = true\nparallel = true\nno_cache = true\nrun = [\"echo a\", \"echo b\"]\n\
+         [tasks.dev]\nforeground = true\nrun = [\"serve\"]\n\
+         [tasks.plain]\nrun = [\"echo plain\"]\n",
+        &["run", "--dry-run", "a", "dev", "plain"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = |task: &str| {
+        let mut lines = stdout.lines().skip_while(|l| l.trim() != task);
+        lines.nth(1).unwrap_or_default().trim().to_string()
+    };
+    assert_eq!(after("a"), "mode: shell, parallel, no_cache", "{stdout}");
+    assert_eq!(after("dev"), "mode: foreground", "{stdout}");
+    assert!(!after("plain").starts_with("mode:"), "{stdout}");
+
+    let (_dir, out) = run_in(
+        "[tasks.t]\nrun = [\"echo t\"]\n",
+        &["run", "--dry-run", "--shell", "t"],
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("mode: shell"),
+        "--shell not shown"
     );
 }
