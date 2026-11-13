@@ -4,6 +4,13 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `env` values expand `$VAR` and `${VAR}` (`$$` for a literal `$`), so a task can extend `PATH` (#24).
+- `yatr check` warns on shell syntax in a command without `shell = true`, and on a cached task with no `sources` (#24).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

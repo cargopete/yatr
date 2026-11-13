@@ -245,6 +245,29 @@ fn run_check_command(cli: &Cli) -> Result<()> {
             }
         }
 
+        if !task.shell.unwrap_or(false) {
+            for cmd in &task.run {
+                if let Some(syntax) = config::shell_syntax(cmd) {
+                    warnings.push(format!(
+                        "task '{name}': `{cmd}` uses shell syntax (`{syntax}`) but the task \
+                         does not set `shell = true`, so it is passed to the program literally"
+                    ));
+                }
+            }
+        }
+        let has_commands = !task.run.is_empty() || task.script.is_some() || task.wasm.is_some();
+        if config.settings.cache
+            && has_commands
+            && task.sources.is_empty()
+            && !task.no_cache
+            && !task.foreground
+        {
+            warnings.push(format!(
+                "task '{name}': declares no `sources`, so yatr cannot tell when its inputs \
+                 change. Declare `sources`, or set `no_cache = true` if it should always run"
+            ));
+        }
+
         if task.foreground && task.run.len() > 1 {
             warnings.push(format!(
                 "task '{name}': foreground tasks only run their first command ({} given)",

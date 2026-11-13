@@ -41,6 +41,15 @@ shell = true
 run = ["diesel migration run"]
 ```
 
+Values expand `$VAR` and `${VAR}`: global values from the process environment,
+task values from that plus the global `[env]`, so `PATH = "${HOME}/bin:${PATH}"`
+works. An unset name expands to nothing; write `$$` for a literal `$`.
+
+Without `shell = true` a command is split into words and run directly, so `>`,
+`|`, `&&`, `;` and `$VAR` reach the program as literal text. `yatr check` warns
+when a non-shell command contains them, and when a cached task declares no
+`sources`.
+
 ## Long-running processes
 
 ```toml
