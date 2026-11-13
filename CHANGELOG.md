@@ -6,6 +6,10 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `env` values expand `${VAR:-default}` and `${VAR-default}`, so `[env]` can give a default the caller overrides; `yatr check` warns on any other `${...}` form, which is passed through literally (#45).
+
 ### Fixed
 
 - A run whose `outputs` pattern captures no files warns, naming the pattern, rather than caching an entry that restores nothing in silence (#41).

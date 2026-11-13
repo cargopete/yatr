@@ -1035,3 +1035,44 @@ fn outputs_pattern_capturing_nothing_warns() {
     );
     assert!(!stderr.contains("yatr.toml"), "{stderr}");
 }
+
+/// Regression (#45): `yatr check` warns on a `${...}` form it does not expand.
+#[test]
+fn check_warns_on_unsupported_expansion() {
+    let stdout = check_stdout(
+        "[env]\nA = \"${A:=x}\"\nB = \"${B:-x}\"\n\
+         [tasks.t]\nno_cache = true\nrun = [\"true\"]\nenv = { C = \"${#C}\" }\n",
+    );
+    assert!(stdout.contains("`${A:=x}`"), "{stdout}");
+    assert!(
+        stdout.contains("task 't'") && stdout.contains("`${#C}`"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("${B:-x}"), "{stdout}");
+}
+
+/// Regression (#45): `[env] X = "${X:-fallback}"` is a default the caller overrides.
+#[cfg(unix)]
+#[test]
+fn env_default_is_overridable_by_the_caller() {
+    let p = yatr_project(
+        "[env]\nYATR_T45 = \"${YATR_T45:-fallback}\"\n\
+         [tasks.show]\nshell = true\nno_cache = true\nrun = [\"echo X=$YATR_T45\"]\n",
+    );
+    let out = run_yatr(p.path(), &["show"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("X=fallback"),
+        "{out:?}"
+    );
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(p.path())
+        .env("YATR_T45", "set")
+        .arg("show")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("X=set"),
+        "{out:?}"
+    );
+}

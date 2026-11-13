@@ -172,6 +172,7 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
+    warn_unsupported_expansions("[env]", &config.env, &mut warnings);
     let builtins = cli::builtin_names();
     for name in graph.task_names() {
         if let Some(task) = config.get_task(name) {
@@ -206,6 +207,24 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     }
 }
 
+/// `${...}` forms that `env` expansion keeps as literal text.
+fn warn_unsupported_expansions(
+    scope: &str,
+    env: &std::collections::HashMap<String, String>,
+    warnings: &mut Vec<String>,
+) {
+    let mut vars: Vec<_> = env.iter().collect();
+    vars.sort();
+    for (key, value) in vars {
+        for form in config::unsupported_expansions(value) {
+            warnings.push(format!(
+                "{scope}: `{key}` uses `{form}`, which is not expanded; only `${{VAR}}`, \
+                 `${{VAR:-default}}` and `${{VAR-default}}` are"
+            ));
+        }
+    }
+}
+
 /// The per-task checks behind `yatr check`.
 fn check_task(
     name: &str,
@@ -221,6 +240,7 @@ fn check_task(
              use `yatr run {name}` or rename it"
         ));
     }
+    warn_unsupported_expansions(&format!("task '{name}'"), &task.env, warnings);
     let base = task.working_dir().unwrap_or_else(|| ".".into());
 
     // Referenced paths must exist.

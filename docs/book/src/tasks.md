@@ -53,6 +53,10 @@ run = ["diesel migration run"]
 Values expand `$VAR` and `${VAR}`: global values from the process environment,
 task values from that plus the global `[env]`, so `PATH = "${HOME}/bin:${PATH}"`
 works. An unset name expands to nothing; write `$$` for a literal `$`.
+`${VAR:-default}` takes the default when `VAR` is unset or empty, `${VAR-default}`
+only when it is unset, so `[env] ROOT = "${ROOT:-/srv}"` is a default the caller
+can override with `ROOT=/other yatr ...`. Any other `${...}` form is passed through
+literally, and `yatr check` warns about it.
 
 Without `shell = true` a command is split into words and run directly, so `>`,
 `|`, `&&`, `;` and `$VAR` reach the program as literal text. `yatr check` warns
