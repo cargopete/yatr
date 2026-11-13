@@ -452,3 +452,99 @@ fn dependency_change_busts_dependent() {
         "verify replayed a result from before gen's input changed"
     );
 }
+
+/// `outputs = ["out/**"]` captures the tree, and is restored on a hit.
+#[test]
+fn double_star_output_is_captured_and_restored() {
+    let gen = if cfg!(windows) {
+        r"mkdir out\sub && echo hi> out\a.txt && echo hi> out\sub\b.txt"
+    } else {
+        "mkdir -p out/sub && echo hi > out/a.txt && echo hi > out/sub/b.txt"
+    };
+    let p = yatr_project(&format!(
+        "[tasks.gen]\nshell = true\nrun = ['{gen}']\n\
+         sources = [\"input\"]\noutputs = [\"out/**\"]\n"
+    ));
+    std::fs::write(p.path().join("input"), "").unwrap();
+    assert!(run_yatr(p.path(), &["gen"]).status.success());
+    std::fs::remove_dir_all(p.path().join("out")).unwrap();
+    let out = run_yatr(p.path(), &["gen"]);
+    assert!(was_cached(&out));
+    assert!(
+        p.path().join("out/a.txt").exists() && p.path().join("out/sub/b.txt").exists(),
+        "a hit on `out/**` did not restore the tree"
+    );
+}
+
+/// `*` in `sources` stops at `/`, as it does in `outputs`, and `./` is ignored.
+#[test]
+fn source_globs_share_the_output_dialect() {
+    let p = yatr_project("[tasks.t]\nrun = [\"true\"]\nsources = [\"*.txt\", \"./data.bin\"]\n");
+    std::fs::write(p.path().join("a.txt"), "").unwrap();
+    std::fs::write(p.path().join("data.bin"), "v1").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["t"])));
+
+    std::fs::create_dir(p.path().join("sub")).unwrap();
+    std::fs::write(p.path().join("sub/deep.txt"), "").unwrap();
+    assert!(
+        was_cached(&run_yatr(p.path(), &["t"])),
+        "`*.txt` matched a file in a subdirectory"
+    );
+
+    std::fs::write(p.path().join("data.bin"), "v2").unwrap();
+    assert!(
+        !was_cached(&run_yatr(p.path(), &["t"])),
+        "a `./` source was not hashed"
+    );
+}
+
+/// A source named through a gitignored path is generated input, and is hashed.
+#[test]
+fn gitignored_source_named_explicitly_is_hashed() {
+    let p = yatr_project(
+        "[tasks.pack]\nrun = [\"true\"]\nsources = [\"gen/schema.json\", \"dist/**\"]\n",
+    );
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(p.path())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    std::fs::write(p.path().join(".gitignore"), "gen/\ndist/\n").unwrap();
+    std::fs::create_dir_all(p.path().join("gen")).unwrap();
+    std::fs::create_dir_all(p.path().join("dist/js")).unwrap();
+    std::fs::write(p.path().join("gen/schema.json"), "v1").unwrap();
+    std::fs::write(p.path().join("dist/js/app.js"), "v1").unwrap();
+
+    let check = run_yatr(p.path(), &["check"]);
+    assert!(
+        !String::from_utf8_lossy(&check.stdout).contains("no files")
+            && !String::from_utf8_lossy(&check.stderr).contains("no files"),
+        "check reported an existing ignored source as missing"
+    );
+
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+    assert!(was_cached(&run_yatr(p.path(), &["pack"])));
+    std::fs::write(p.path().join("gen/schema.json"), "v2").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+    assert!(was_cached(&run_yatr(p.path(), &["pack"])));
+    std::fs::write(p.path().join("dist/js/app.js"), "v2").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+}
+
+/// Outside a git checkout `.gitignore` still keeps ignored files out of a key.
+#[test]
+fn gitignore_is_honoured_outside_git() {
+    let p = yatr_project("[tasks.t]\nrun = [\"true\"]\nsources = [\"**/*.rs\"]\n");
+    std::fs::write(p.path().join(".gitignore"), "target/\n").unwrap();
+    std::fs::create_dir(p.path().join("target")).unwrap();
+    std::fs::write(p.path().join("lib.rs"), "").unwrap();
+    std::fs::write(p.path().join("target/gen.rs"), "v1").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["t"])));
+    std::fs::write(p.path().join("target/gen.rs"), "v2").unwrap();
+    assert!(
+        was_cached(&run_yatr(p.path(), &["t"])),
+        "an ignored file busted the key"
+    );
+}

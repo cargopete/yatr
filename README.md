@@ -181,6 +181,10 @@ sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/release/myapp"]
 ```
 
+Patterns are relative to the task's directory: `*` stops at `/`, `**` crosses
+it. Sources respect `.gitignore`, except a path you name inside an ignored
+directory (`gen/schema.json`, `web/dist/**`), which is hashed anyway.
+
 Disable caching:
 
 ```toml

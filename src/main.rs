@@ -30,6 +30,7 @@ mod cli;
 mod config;
 mod error;
 mod executor;
+mod globs;
 mod graph;
 mod lsp;
 mod reapi;

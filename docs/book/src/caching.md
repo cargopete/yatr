@@ -32,6 +32,16 @@ outputs = ["target/release/app"]
 run = ["cargo build --release"]
 ```
 
+`sources`, `outputs` and `watch` share one glob dialect, matched against paths
+relative to the task's directory: `*` and `?` stop at `/`, `**` crosses it, and
+a leading `./` is ignored. So `*.js` means top-level files only, and `dist/**`
+means everything under `dist`.
+
+Sources respect `.gitignore`, in a git checkout or not, so build artifacts stay
+out of wildcard matches. A pattern whose literal path is itself ignored, such as
+`gen/schema.json` or `web/dist/**`, names generated input on purpose and is
+hashed regardless. Outputs ignore `.gitignore` entirely.
+
 ## Outputs are captured and restored
 
 On success, the files matched by `outputs` are stored in a content-addressed

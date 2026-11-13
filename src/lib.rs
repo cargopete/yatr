@@ -60,6 +60,7 @@ pub mod cache;
 pub mod config;
 pub mod error;
 pub mod executor;
+pub mod globs;
 pub mod graph;
 pub mod lsp;
 pub mod reapi;
