@@ -166,9 +166,13 @@ Available Rhai functions:
 
 ### Caching
 
-Tasks are cached by default based on:
-- Task configuration (commands, env vars)
-- Source file contents (if `sources` specified)
+A task that declares `sources` is cached, keyed on:
+- Task configuration (commands, global and task env, pinned toolchains)
+- Source file contents
+- Ambient variables named in `env_inputs`
+- The keys of its dependencies
+
+A task with no `sources` has no declared inputs and is never cached.
 
 ```toml
 [tasks.build]
@@ -176,6 +180,10 @@ run = ["cargo build --release"]
 sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/release/myapp"]
 ```
+
+Patterns are relative to the task's directory: `*` stops at `/`, `**` crosses
+it. Sources respect `.gitignore`, except a path you name inside an ignored
+directory (`gen/schema.json`, `web/dist/**`), which is hashed anyway.
 
 Disable caching:
 
@@ -627,6 +635,7 @@ wasm = "plugin.wasm"                 # WASM plugin (path, http(s):// or github:â
 depends = ["other-task"]             # Run these first
 parallel = false                     # Run commands in parallel
 env = { KEY = "value" }              # Task-specific env vars
+env_inputs = ["CLANG"]               # Ambient env vars that affect the cache key
 cwd = "./subdir"                     # Working directory
 shell = false                        # Use shell for commands
 foreground = true                    # Inherit stdio (dev servers); not cached

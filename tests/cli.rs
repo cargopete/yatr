@@ -645,3 +645,272 @@ fn dry_run_plan_names_tasks_with_cwd_and_env() {
     let column = |l: &str, word: &str| l.chars().count() - word.len();
     assert_eq!(column(one, "line one"), column(two, "line two"), "{stdout}");
 }
+
+fn run_yatr(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// A cache hit must restore outputs with their mode and symlinks intact, and
+/// must not strip the executable bit from an output that is already present.
+#[cfg(unix)]
+#[test]
+fn cache_hit_restores_exec_bit_and_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    std::fs::write(
+        p.join("yatr.toml"),
+        "[settings]\ncache_dir = \".yatr/cache\"\n\
+         [tasks.mk]\nshell = true\n\
+         run = [\"mkdir -p out && printf '#!/bin/sh\\\\necho hi\\\\n' > out/tool && chmod +x out/tool && ln -sf tool out/link\"]\n\
+         sources = [\"yatr.toml\"]\noutputs = [\"out\"]\n\
+         [tasks.mkglob]\nshell = true\n\
+         run = [\"mkdir -p g && printf x > g/f && ln -sf f g/link\"]\n\
+         sources = [\"yatr.toml\"]\noutputs = [\"g/*\"]\n",
+    )
+    .unwrap();
+    let mode = |rel: &str| std::fs::metadata(p.join(rel)).unwrap().permissions().mode() & 0o777;
+
+    assert!(run_yatr(p, &["mk"]).status.success());
+    // Second run is a hit over the existing outputs.
+    let out = run_yatr(p, &["mk"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert_eq!(mode("out/tool"), 0o755, "a hit clobbered the exec bit");
+
+    std::fs::remove_dir_all(p.join("out")).unwrap();
+    let out = run_yatr(p, &["mk"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert_eq!(mode("out/tool"), 0o755, "restored without its exec bit");
+    let link = p.join("out/link");
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        std::path::Path::new("tool")
+    );
+
+    assert!(run_yatr(p, &["mkglob"]).status.success());
+    std::fs::remove_dir_all(p.join("g")).unwrap();
+    assert!(run_yatr(p, &["mkglob"]).status.success());
+    let link = p.join("g/link");
+    assert!(
+        link.symlink_metadata().unwrap().file_type().is_symlink(),
+        "a globbed symlink came back as a regular file"
+    );
+}
+
+fn yatr_project(toml: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{toml}"),
+    )
+    .unwrap();
+    dir
+}
+
+fn was_cached(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stdout).contains("✓ cached")
+}
+
+/// A task with no `sources` has undeclared inputs, so it is never cached.
+#[test]
+fn sourceless_task_is_not_cached() {
+    let p = yatr_project("[tasks.gate]\nrun = [\"test -f ok\"]\n");
+    std::fs::write(p.path().join("ok"), "").unwrap();
+    assert!(run_yatr(p.path(), &["gate"]).status.success());
+    std::fs::remove_file(p.path().join("ok")).unwrap();
+    let out = run_yatr(p.path(), &["gate"]);
+    assert!(
+        !out.status.success(),
+        "a sourceless task replayed a stale pass"
+    );
+    assert!(!was_cached(&out));
+}
+
+/// Two projects sharing a cache directory never serve each other's entries.
+#[test]
+fn identical_tasks_in_two_projects_do_not_share_local_entries() {
+    let shared = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[settings]\ncache_dir = '{}'\n[tasks.gate]\nrun = [\"test -f ok\"]\nsources = [\"yatr.toml\"]\n",
+        shared.path().display()
+    );
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    std::fs::write(a.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(b.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(a.path().join("ok"), "").unwrap();
+
+    assert!(run_yatr(a.path(), &["gate"]).status.success());
+    let out = run_yatr(b.path(), &["gate"]);
+    assert!(!out.status.success(), "b was served a's cached pass");
+}
+
+/// The global `[env]`, declared ambient `env_inputs` and pinned toolchains
+/// are all inputs to the key, not just the task's own `env`.
+#[test]
+fn merged_and_declared_env_bust_the_key() {
+    let echo = if cfg!(windows) {
+        "echo MODE=%MODE% FOO=%FOO%"
+    } else {
+        "echo MODE=$MODE FOO=$FOO"
+    };
+    let toml = |mode: &str| {
+        format!(
+            "[env]\nMODE = \"{mode}\"\n[tasks.show]\nshell = true\n\
+             run = [\"{echo}\"]\nsources = [\"input\"]\nenv_inputs = [\"FOO\"]\n"
+        )
+    };
+    let p = yatr_project(&toml("one"));
+    std::fs::write(p.path().join("input"), "").unwrap();
+    let run = |foo: &str| {
+        Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(p.path())
+            .env("FOO", foo)
+            .arg("show")
+            .output()
+            .unwrap()
+    };
+
+    assert!(!was_cached(&run("1")));
+    assert!(was_cached(&run("1")));
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a declared env input did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FOO=2"));
+
+    std::fs::write(
+        p.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{}", toml("two")),
+    )
+    .unwrap();
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a global [env] change did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("MODE=two"));
+}
+
+/// A dependent re-runs when a dependency's inputs change.
+#[test]
+fn dependency_change_busts_dependent() {
+    let p = yatr_project(
+        "[tasks.gen]\nshell = true\nrun = [\"cp input.txt artifact.txt\"]\n\
+         sources = [\"input.txt\"]\noutputs = [\"artifact.txt\"]\n\
+         [tasks.verify]\ndepends = [\"gen\"]\nrun = [\"grep -q good artifact.txt\"]\nsources = [\"verify.sh\"]\n",
+    );
+    std::fs::write(p.path().join("verify.sh"), "").unwrap();
+    std::fs::write(p.path().join("input.txt"), "good").unwrap();
+    assert!(run_yatr(p.path(), &["verify"]).status.success());
+    std::fs::write(p.path().join("input.txt"), "bad").unwrap();
+    assert!(
+        !run_yatr(p.path(), &["verify"]).status.success(),
+        "verify replayed a result from before gen's input changed"
+    );
+}
+
+/// `outputs = ["out/**"]` captures the tree, and is restored on a hit.
+#[test]
+fn double_star_output_is_captured_and_restored() {
+    let gen = if cfg!(windows) {
+        r"mkdir out\sub && echo hi> out\a.txt && echo hi> out\sub\b.txt"
+    } else {
+        "mkdir -p out/sub && echo hi > out/a.txt && echo hi > out/sub/b.txt"
+    };
+    let p = yatr_project(&format!(
+        "[tasks.gen]\nshell = true\nrun = ['{gen}']\n\
+         sources = [\"input\"]\noutputs = [\"out/**\"]\n"
+    ));
+    std::fs::write(p.path().join("input"), "").unwrap();
+    assert!(run_yatr(p.path(), &["gen"]).status.success());
+    std::fs::remove_dir_all(p.path().join("out")).unwrap();
+    let out = run_yatr(p.path(), &["gen"]);
+    assert!(was_cached(&out));
+    assert!(
+        p.path().join("out/a.txt").exists() && p.path().join("out/sub/b.txt").exists(),
+        "a hit on `out/**` did not restore the tree"
+    );
+}
+
+/// `*` in `sources` stops at `/`, as it does in `outputs`, and `./` is ignored.
+#[test]
+fn source_globs_share_the_output_dialect() {
+    let p = yatr_project("[tasks.t]\nrun = [\"true\"]\nsources = [\"*.txt\", \"./data.bin\"]\n");
+    std::fs::write(p.path().join("a.txt"), "").unwrap();
+    std::fs::write(p.path().join("data.bin"), "v1").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["t"])));
+
+    std::fs::create_dir(p.path().join("sub")).unwrap();
+    std::fs::write(p.path().join("sub/deep.txt"), "").unwrap();
+    assert!(
+        was_cached(&run_yatr(p.path(), &["t"])),
+        "`*.txt` matched a file in a subdirectory"
+    );
+
+    std::fs::write(p.path().join("data.bin"), "v2").unwrap();
+    assert!(
+        !was_cached(&run_yatr(p.path(), &["t"])),
+        "a `./` source was not hashed"
+    );
+}
+
+/// A source named through a gitignored path is generated input, and is hashed.
+#[test]
+fn gitignored_source_named_explicitly_is_hashed() {
+    let p = yatr_project(
+        "[tasks.pack]\nrun = [\"true\"]\nsources = [\"gen/schema.json\", \"dist/**\"]\n",
+    );
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(p.path())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    std::fs::write(p.path().join(".gitignore"), "gen/\ndist/\n").unwrap();
+    std::fs::create_dir_all(p.path().join("gen")).unwrap();
+    std::fs::create_dir_all(p.path().join("dist/js")).unwrap();
+    std::fs::write(p.path().join("gen/schema.json"), "v1").unwrap();
+    std::fs::write(p.path().join("dist/js/app.js"), "v1").unwrap();
+
+    let check = run_yatr(p.path(), &["check"]);
+    assert!(
+        !String::from_utf8_lossy(&check.stdout).contains("no files")
+            && !String::from_utf8_lossy(&check.stderr).contains("no files"),
+        "check reported an existing ignored source as missing"
+    );
+
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+    assert!(was_cached(&run_yatr(p.path(), &["pack"])));
+    std::fs::write(p.path().join("gen/schema.json"), "v2").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+    assert!(was_cached(&run_yatr(p.path(), &["pack"])));
+    std::fs::write(p.path().join("dist/js/app.js"), "v2").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["pack"])));
+}
+
+/// Outside a git checkout `.gitignore` still keeps ignored files out of a key.
+#[test]
+fn gitignore_is_honoured_outside_git() {
+    let p = yatr_project("[tasks.t]\nrun = [\"true\"]\nsources = [\"**/*.rs\"]\n");
+    std::fs::write(p.path().join(".gitignore"), "target/\n").unwrap();
+    std::fs::create_dir(p.path().join("target")).unwrap();
+    std::fs::write(p.path().join("lib.rs"), "").unwrap();
+    std::fs::write(p.path().join("target/gen.rs"), "v1").unwrap();
+    assert!(!was_cached(&run_yatr(p.path(), &["t"])));
+    std::fs::write(p.path().join("target/gen.rs"), "v2").unwrap();
+    assert!(
+        was_cached(&run_yatr(p.path(), &["t"])),
+        "an ignored file busted the key"
+    );
+}
