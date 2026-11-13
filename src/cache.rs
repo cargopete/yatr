@@ -800,15 +800,7 @@ impl Cache {
             }
         };
 
-        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
-        // honours `.gitignore` outside a git checkout too.
-        for entry in WalkBuilder::new(cwd)
-            .hidden(false)
-            .require_git(false)
-            .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
-            .build()
-            .filter_map(std::result::Result::ok)
-        {
+        for entry in Self::source_walk(cwd, &bases).filter_map(std::result::Result::ok) {
             let path = entry.path();
             for (seen, base) in base_seen.iter_mut().zip(&bases) {
                 *seen |= path == base;
@@ -838,6 +830,24 @@ impl Cache {
 
         // A BTreeMap keeps the files sorted by relative path, for a deterministic hash.
         Ok((files.into_iter().collect(), matched))
+    }
+
+    /// Walk `cwd` honouring ignore files, descending only into directories on
+    /// the way to or below one of `bases`.
+    fn source_walk(cwd: &Path, bases: &[PathBuf]) -> ignore::Walk {
+        let bases = bases.to_vec();
+        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
+        // honours `.gitignore` outside a git checkout too.
+        WalkBuilder::new(cwd)
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(move |e| {
+                !Self::never_walked(Path::new(e.file_name()))
+                    && bases
+                        .iter()
+                        .any(|b| b.starts_with(e.path()) || e.path().starts_with(b))
+            })
+            .build()
     }
 
     fn never_walked(rel: &Path) -> bool {
@@ -1393,6 +1403,30 @@ mod tests {
         assert_eq!(
             key(&["a".into(), "b".into()]),
             key(&["b".into(), "a".into()])
+        );
+    }
+
+    /// Regression (#47): only the patterns' literal bases are walked.
+    #[test]
+    fn test_source_walk_stays_inside_literal_bases() {
+        let work = tempfile::tempdir().unwrap();
+        for dir in ["src/a", "junk/deep", "srcx"] {
+            std::fs::create_dir_all(work.path().join(dir)).unwrap();
+            std::fs::write(work.path().join(dir).join("f"), b"x").unwrap();
+        }
+        let bases = [work.path().join("src")];
+        let walked: Vec<PathBuf> = Cache::source_walk(work.path(), &bases)
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path().strip_prefix(work.path()).unwrap().to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                PathBuf::from("src"),
+                PathBuf::from("src/a"),
+                PathBuf::from("src/a/f")
+            ]
         );
     }
 

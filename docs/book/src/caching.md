@@ -42,6 +42,10 @@ out of wildcard matches. A pattern whose literal path is itself ignored, such as
 `gen/schema.json` or `web/dist/**`, names generated input on purpose and is
 hashed regardless. Outputs ignore `.gitignore` entirely.
 
+Only each pattern's literal base is walked: `src/**` reads `src/` and nothing
+beside it, however large. A pattern that starts with a wildcard, such as
+`**/*.rs`, walks the whole task directory.
+
 ## Outputs are captured and restored
 
 On success, the files matched by `outputs` are stored in a content-addressed
