@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `yatr watch`: patterns are matched relative to the task's `cwd` (relative patterns never fired), dependencies' patterns are watched, `[toolchain]` pins are applied, and `--clear` clears the screen (#20).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

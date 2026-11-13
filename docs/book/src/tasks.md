@@ -62,3 +62,13 @@ run = ["cargo watch -x run"]
 | `sources`, `outputs` | [Caching](./caching.md) inputs/outputs |
 | `watch` | File patterns for `yatr watch` |
 | `no_cache`, `allow_failure`, `timeout` | Per-task behaviour |
+
+## Watch mode
+
+`yatr watch <task>` runs the task once, then again whenever a watched file
+changes. Each task in the chain (the task and its dependencies) contributes its
+`watch` patterns, or its `sources` if it has no `watch`, matched relative to that
+task's `cwd`. If none declares either, `**/*.rs`, `**/*.toml` and `Cargo.lock`
+are watched. `*` does not cross `/`; use `**` for that. Pinned `[toolchain]`s are
+put on `PATH` as for `yatr run`. The cache is off in watch mode, so every change
+re-runs the whole chain. `--clear` clears the screen before each run.

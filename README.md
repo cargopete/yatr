@@ -201,6 +201,11 @@ run = ["cargo test"]
 watch = ["src/**/*.rs", "tests/**/*.rs"]
 ```
 
+Watch runs the task once at start, then on every matching change. Patterns are
+relative to the task's `cwd`, `*` does not cross `/`, and a task without `watch`
+falls back to its `sources`; dependencies' patterns are watched too. The cache is
+off in watch mode, and `[toolchain]` pins apply as they do for `yatr run`.
+
 ### Shell Mode
 
 By default, commands run without a shell (cross-platform safe). Enable shell for pipes, redirects, etc:
