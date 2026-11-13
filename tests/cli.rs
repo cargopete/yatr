@@ -456,10 +456,15 @@ fn dependency_change_busts_dependent() {
 /// `outputs = ["out/**"]` captures the tree, and is restored on a hit.
 #[test]
 fn double_star_output_is_captured_and_restored() {
-    let p = yatr_project(
-        "[tasks.gen]\nshell = true\nrun = [\"mkdir -p out/sub && echo hi > out/a.txt && echo hi > out/sub/b.txt\"]\n\
-         sources = [\"input\"]\noutputs = [\"out/**\"]\n",
-    );
+    let gen = if cfg!(windows) {
+        r"mkdir out\sub && echo hi> out\a.txt && echo hi> out\sub\b.txt"
+    } else {
+        "mkdir -p out/sub && echo hi > out/a.txt && echo hi > out/sub/b.txt"
+    };
+    let p = yatr_project(&format!(
+        "[tasks.gen]\nshell = true\nrun = ['{gen}']\n\
+         sources = [\"input\"]\noutputs = [\"out/**\"]\n"
+    ));
     std::fs::write(p.path().join("input"), "").unwrap();
     assert!(run_yatr(p.path(), &["gen"]).status.success());
     std::fs::remove_dir_all(p.path().join("out")).unwrap();
