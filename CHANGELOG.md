@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Cached outputs keep their executable bit and symlinks on restore, and a hit no longer strips the mode of an output already on disk (#10).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

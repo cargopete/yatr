@@ -43,10 +43,18 @@ pub struct OutputFile {
     pub executable: bool,
 }
 
+/// One captured output symlink in an [`ActionResult`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OutputSymlink {
+    pub path: String,
+    pub target: String,
+}
+
 /// The slice of `build.bazel.remote.execution.v2.ActionResult` yatr uses.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ActionResult {
     pub output_files: Vec<OutputFile>,
+    pub output_symlinks: Vec<OutputSymlink>,
     pub exit_code: i32,
     pub stdout: Vec<u8>,
 }
@@ -99,6 +107,13 @@ fn encode_output_file(f: &OutputFile) -> Vec<u8> {
     buf
 }
 
+fn encode_output_symlink(l: &OutputSymlink) -> Vec<u8> {
+    let mut buf = Vec::new();
+    put_len_delimited(1, l.path.as_bytes(), &mut buf); // OutputSymlink.path
+    put_len_delimited(2, l.target.as_bytes(), &mut buf); // OutputSymlink.target
+    buf
+}
+
 /// Encode an [`ActionResult`] to its REAPI protobuf bytes.
 #[must_use]
 pub fn encode_action_result(ar: &ActionResult) -> Vec<u8> {
@@ -111,6 +126,9 @@ pub fn encode_action_result(ar: &ActionResult) -> Vec<u8> {
     }
     if !ar.stdout.is_empty() {
         put_len_delimited(5, &ar.stdout, &mut buf); // ActionResult.stdout_raw
+    }
+    for l in &ar.output_symlinks {
+        put_len_delimited(12, &encode_output_symlink(l), &mut buf); // ActionResult.output_symlinks
     }
     buf
 }
@@ -234,6 +252,26 @@ fn decode_output_file(bytes: &[u8]) -> OutputFile {
     f
 }
 
+fn decode_output_symlink(bytes: &[u8]) -> OutputSymlink {
+    let mut r = Reader::new(bytes);
+    let mut l = OutputSymlink::default();
+    while !r.done() {
+        let Some(tag) = r.varint() else { break };
+        let (field, wire) = ((tag >> 3) as u32, (tag & 7) as u32);
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        match (field, wire) {
+            (1, 2) => l.path = r.bytes().map(text).unwrap_or_default(),
+            (2, 2) => l.target = r.bytes().map(text).unwrap_or_default(),
+            _ => {
+                if !r.skip(wire) {
+                    break;
+                }
+            }
+        }
+    }
+    l
+}
+
 /// Decode REAPI protobuf bytes into an [`ActionResult`]. Unknown fields are
 /// skipped, so it tolerates results written by Bazel or other REAPI clients.
 #[must_use]
@@ -247,6 +285,8 @@ pub fn decode_action_result(bytes: &[u8]) -> Option<ActionResult> {
             (2, 2) => ar.output_files.push(decode_output_file(r.bytes()?)),
             (4, 0) => ar.exit_code = i32::try_from(r.varint()?).unwrap_or(0),
             (5, 2) => ar.stdout = r.bytes()?.to_vec(),
+            // 10 and 11 are the deprecated file/directory symlink lists older clients write.
+            (10..=12, 2) => ar.output_symlinks.push(decode_output_symlink(r.bytes()?)),
             _ => {
                 if !r.skip(wire) {
                     return None;
@@ -287,6 +327,10 @@ mod tests {
                     executable: false,
                 },
             ],
+            output_symlinks: vec![OutputSymlink {
+                path: "bin/app-latest".into(),
+                target: "app".into(),
+            }],
             exit_code: 0,
             stdout: b"built ok\n".to_vec(),
         };
@@ -305,6 +349,7 @@ mod tests {
                 size: 1,
                 executable: false,
             }],
+            output_symlinks: vec![],
             exit_code: 0,
             stdout: b"hi".to_vec(),
         };
@@ -324,6 +369,7 @@ mod tests {
         // exit_code (field 4) then an unknown field 9 (varint) — must be skipped.
         let mut bytes = encode_action_result(&ActionResult {
             output_files: vec![],
+            output_symlinks: vec![],
             exit_code: 3,
             stdout: vec![],
         });

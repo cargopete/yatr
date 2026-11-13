@@ -18,6 +18,11 @@ store. On a **cache hit, they're restored** — delete `target/`, get a hit, and
 your artifacts come back. (Many runners "cache" only stdout and leave you with
 nothing on disk; yatr restores the real outputs.)
 
+Restored files keep their permission bits, so a cached binary is still
+executable, and symlinks come back as symlinks (on Unix). Each file is written
+beside its destination and renamed into place, so a hit over existing outputs
+replaces them rather than writing through a symlink or into a running binary.
+
 ## Cache correctness
 
 A fast cache that's occasionally wrong is worse than no cache. yatr keys on file
