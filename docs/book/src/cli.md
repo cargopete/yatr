@@ -36,6 +36,10 @@ the same options, before or after the task names. Every name is checked before
 anything runs, and several names are planned as one graph, so a shared
 dependency runs once.
 
+The `--dry-run` plan lists each task by stage with what it would run, its `cwd`
+and `env`, and a `mode:` line naming whichever of `shell`, `parallel`,
+`no_cache` and `foreground` apply.
+
 ## Global options
 
 ```bash

@@ -1212,7 +1212,6 @@ impl Executor {
     }
 
     /// Print dry-run execution plan
-    #[allow(clippy::unused_self)]
     fn print_dry_run(&self, plan: &ExecutionPlan) {
         outln!("{}", style("Execution plan (dry run):").bold().cyan());
         outln!();
@@ -1231,13 +1230,13 @@ impl Executor {
             );
 
             for task in group {
-                Self::print_planned_task(task);
+                Self::print_planned_task(task, self.exec_config.shell);
             }
         }
     }
 
     /// One task's entry in the dry-run plan: what runs, where, with what env.
-    fn print_planned_task(task: &TaskNode) {
+    fn print_planned_task(task: &TaskNode, shell: bool) {
         let config = &task.config;
         if is_aggregate(task) {
             outln!(
@@ -1248,6 +1247,18 @@ impl Executor {
             return;
         }
         outln!("  {}", style(&task.name).bold());
+        let modes: Vec<&str> = [
+            (shell || config.shell.unwrap_or(false), "shell"),
+            (config.parallel, "parallel"),
+            (config.no_cache, "no_cache"),
+            (config.foreground, "foreground"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if !modes.is_empty() {
+            outln!("    {} {}", style("mode:").dim(), modes.join(", "));
+        }
         if let Some(cwd) = &config.cwd {
             outln!("    {} {}", style("cwd:").dim(), cwd.display());
         }

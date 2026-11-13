@@ -1138,3 +1138,39 @@ fn keep_going_reports_every_failure() {
         "{stderr}"
     );
 }
+
+/// `yatr check` counts in the singular for one task.
+#[test]
+fn check_says_one_task() {
+    let stdout = check_stdout("[tasks.only]\nrun = [\"true\"]\n");
+    assert!(stdout.contains("(1 task"), "{stdout}");
+    assert!(!stdout.contains("1 tasks"), "{stdout}");
+}
+
+/// The dry-run plan shows the settings that change how a task runs.
+#[test]
+fn dry_run_plan_shows_run_modes() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nshell = true\nparallel = true\nno_cache = true\nrun = [\"echo a\", \"echo b\"]\n\
+         [tasks.dev]\nforeground = true\nrun = [\"serve\"]\n\
+         [tasks.plain]\nrun = [\"echo plain\"]\n",
+        &["run", "--dry-run", "a", "dev", "plain"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = |task: &str| {
+        let mut lines = stdout.lines().skip_while(|l| l.trim() != task);
+        lines.nth(1).unwrap_or_default().trim().to_string()
+    };
+    assert_eq!(after("a"), "mode: shell, parallel, no_cache", "{stdout}");
+    assert_eq!(after("dev"), "mode: foreground", "{stdout}");
+    assert!(!after("plain").starts_with("mode:"), "{stdout}");
+
+    let (_dir, out) = run_in(
+        "[tasks.t]\nrun = [\"echo t\"]\n",
+        &["run", "--dry-run", "--shell", "t"],
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("mode: shell"),
+        "--shell not shown"
+    );
+}

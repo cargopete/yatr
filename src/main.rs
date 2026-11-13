@@ -193,11 +193,12 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         } else {
             format!(", {} warning(s)", warnings.len())
         };
+        let count = graph.task_names().count();
         outln!(
-            "{} {} is valid ({} tasks{suffix})",
+            "{} {} is valid ({count} {}{suffix})",
             style("✓").green(),
             path.display(),
-            graph.task_names().count()
+            if count == 1 { "task" } else { "tasks" },
         );
         Ok(())
     } else {
