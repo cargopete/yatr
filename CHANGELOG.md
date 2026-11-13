@@ -6,6 +6,12 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Tasks without `sources` are no longer cached, and local cache entries are scoped to the project directory, so a key no longer collides across projects (#7).
+- The cache key covers the global `[env]` and pinned toolchain versions, and a new `env_inputs` task key names ambient variables that are cache inputs (#8).
+- A task's cache key includes its dependencies' keys, so a dependent re-runs when a dependency's inputs change (#9).
+
 ## [1.1.1] - 2026-11-13
 
 ### Fixed

@@ -337,3 +337,118 @@ fn cache_hit_restores_exec_bit_and_symlinks() {
         "a globbed symlink came back as a regular file"
     );
 }
+
+fn yatr_project(toml: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{toml}"),
+    )
+    .unwrap();
+    dir
+}
+
+fn was_cached(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stdout).contains("✓ cached")
+}
+
+/// A task with no `sources` has undeclared inputs, so it is never cached.
+#[test]
+fn sourceless_task_is_not_cached() {
+    let p = yatr_project("[tasks.gate]\nrun = [\"test -f ok\"]\n");
+    std::fs::write(p.path().join("ok"), "").unwrap();
+    assert!(run_yatr(p.path(), &["gate"]).status.success());
+    std::fs::remove_file(p.path().join("ok")).unwrap();
+    let out = run_yatr(p.path(), &["gate"]);
+    assert!(
+        !out.status.success(),
+        "a sourceless task replayed a stale pass"
+    );
+    assert!(!was_cached(&out));
+}
+
+/// Two projects sharing a cache directory never serve each other's entries.
+#[test]
+fn identical_tasks_in_two_projects_do_not_share_local_entries() {
+    let shared = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[settings]\ncache_dir = '{}'\n[tasks.gate]\nrun = [\"test -f ok\"]\nsources = [\"yatr.toml\"]\n",
+        shared.path().display()
+    );
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    std::fs::write(a.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(b.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(a.path().join("ok"), "").unwrap();
+
+    assert!(run_yatr(a.path(), &["gate"]).status.success());
+    let out = run_yatr(b.path(), &["gate"]);
+    assert!(!out.status.success(), "b was served a's cached pass");
+}
+
+/// The global `[env]`, declared ambient `env_inputs` and pinned toolchains
+/// are all inputs to the key, not just the task's own `env`.
+#[test]
+fn merged_and_declared_env_bust_the_key() {
+    let echo = if cfg!(windows) {
+        "echo MODE=%MODE% FOO=%FOO%"
+    } else {
+        "echo MODE=$MODE FOO=$FOO"
+    };
+    let toml = |mode: &str| {
+        format!(
+            "[env]\nMODE = \"{mode}\"\n[tasks.show]\nshell = true\n\
+             run = [\"{echo}\"]\nsources = [\"input\"]\nenv_inputs = [\"FOO\"]\n"
+        )
+    };
+    let p = yatr_project(&toml("one"));
+    std::fs::write(p.path().join("input"), "").unwrap();
+    let run = |foo: &str| {
+        Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(p.path())
+            .env("FOO", foo)
+            .arg("show")
+            .output()
+            .unwrap()
+    };
+
+    assert!(!was_cached(&run("1")));
+    assert!(was_cached(&run("1")));
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a declared env input did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FOO=2"));
+
+    std::fs::write(
+        p.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{}", toml("two")),
+    )
+    .unwrap();
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a global [env] change did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("MODE=two"));
+}
+
+/// A dependent re-runs when a dependency's inputs change.
+#[test]
+fn dependency_change_busts_dependent() {
+    let p = yatr_project(
+        "[tasks.gen]\nshell = true\nrun = [\"cp input.txt artifact.txt\"]\n\
+         sources = [\"input.txt\"]\noutputs = [\"artifact.txt\"]\n\
+         [tasks.verify]\ndepends = [\"gen\"]\nrun = [\"grep -q good artifact.txt\"]\nsources = [\"verify.sh\"]\n",
+    );
+    std::fs::write(p.path().join("verify.sh"), "").unwrap();
+    std::fs::write(p.path().join("input.txt"), "good").unwrap();
+    assert!(run_yatr(p.path(), &["verify"]).status.success());
+    std::fs::write(p.path().join("input.txt"), "bad").unwrap();
+    assert!(
+        !run_yatr(p.path(), &["verify"]).status.success(),
+        "verify replayed a result from before gen's input changed"
+    );
+}

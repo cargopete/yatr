@@ -200,6 +200,10 @@ pub struct TaskConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 
+    /// Names of ambient environment variables whose values are cache inputs
+    #[serde(default)]
+    pub env_inputs: Vec<String>,
+
     /// Working directory for this task
     #[serde(default)]
     pub cwd: Option<PathBuf>,

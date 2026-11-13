@@ -225,6 +225,11 @@ fn run_check_command(cli: &Cli) -> Result<()> {
                 "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
             ));
         }
+        if !task.outputs.is_empty() && task.sources.is_empty() && !task.no_cache {
+            warnings.push(format!(
+                "task '{name}': declares `outputs` but no `sources` — a task without sources is never cached"
+            ));
+        }
         // A `sources` pattern matching nothing contributes nothing to the
         // cache key, so the task silently stops invalidating. Nearly always a
         // typo or a path that moved.
