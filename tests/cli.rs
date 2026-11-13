@@ -314,12 +314,12 @@ fn cache_hit_restores_exec_bit_and_symlinks() {
     assert!(run_yatr(p, &["mk"]).status.success());
     // Second run is a hit over the existing outputs.
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("cached"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
     assert_eq!(mode("out/tool"), 0o755, "a hit clobbered the exec bit");
 
     std::fs::remove_dir_all(p.join("out")).unwrap();
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("cached"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
     assert_eq!(mode("out/tool"), 0o755, "restored without its exec bit");
     let link = p.join("out/link");
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
