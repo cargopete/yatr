@@ -68,8 +68,9 @@ yatr run --trace-io build   # "task 'build' wrote files not declared as `outputs
 
 ```bash
 yatr cache stats      # entries + size
-yatr cache clear      # clear everything
-yatr cache clear build  # clear one task
+yatr cache clear      # clear this project's entries
+yatr cache clear build  # clear one task in this project
+yatr cache clear --all  # clear every project's entries
 yatr cache path       # show the cache directory
 ```
 

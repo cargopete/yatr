@@ -27,6 +27,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Task paths (`cwd`, `sources`, `outputs`, `wasm`, affected matching) and a relative `cache_dir` resolve against the directory of the file that declares them, not the shell's, so `yatr` behaves the same from a subdirectory and included files see their own paths; a missing task `cwd` now names the path (#19).
 - `yatr watch`: patterns are matched relative to the task's `cwd` (relative patterns never fired), dependencies' patterns are watched, `[toolchain]` pins are applied, and `--clear` clears the screen (#20).
 - `yatr affected` diffs from the ref's merge-base to the working tree, counts untracked files, treats a task whose definition changed in `yatr.toml` as affected, matches `sources` against the task's `cwd`, and no longer treats aggregates as always affected; `run --affected` also skips unaffected dependencies (#21).
+- `yatr cache clear` clears the current project's entries rather than every project's; `--all` clears everything (#38).
+- `[toolchain]` bin dirs are prepended to a `PATH` set in `[env]` instead of replacing it, and stay out of the cache key (#39).
 
 ### Added
 

@@ -985,3 +985,37 @@ fn env_values_expand_variables() {
         "/base/x:$"
     );
 }
+
+/// Regression (#38): `yatr cache clear` clears this project, not every project.
+#[test]
+fn cache_clear_is_scoped_to_the_project() {
+    let shared = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[settings]\ncache_dir = '{}'\n[tasks.t]\nrun = [\"true\"]\nsources = [\"yatr.toml\"]\n",
+        shared.path().display()
+    );
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    std::fs::write(a.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(b.path().join("yatr.toml"), &toml).unwrap();
+    assert!(run_yatr(a.path(), &["t"]).status.success());
+    assert!(run_yatr(b.path(), &["t"]).status.success());
+
+    assert!(run_yatr(a.path(), &["cache", "clear"]).status.success());
+    assert!(
+        !was_cached(&run_yatr(a.path(), &["t"])),
+        "a's entry survived"
+    );
+    assert!(
+        was_cached(&run_yatr(b.path(), &["t"])),
+        "clearing a wiped b"
+    );
+
+    assert!(run_yatr(a.path(), &["cache", "clear", "--all"])
+        .status
+        .success());
+    assert!(
+        !was_cached(&run_yatr(b.path(), &["t"])),
+        "--all left b's entry"
+    );
+}

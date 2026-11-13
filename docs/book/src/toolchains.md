@@ -1,7 +1,8 @@
 # Toolchains
 
 Pin a language runtime and yatr downloads it once and puts it on the task `PATH`
-— a fresh checkout runs green with no manual installs.
+— a fresh checkout runs green with no manual installs. Its bin directory goes in
+front of the `PATH` the task would otherwise see, including one set in `[env]`.
 
 ```toml
 [toolchain.node]
