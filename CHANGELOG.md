@@ -8,6 +8,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A run whose `outputs` pattern captures no files warns, naming the pattern, rather than caching an entry that restores nothing in silence (#41).
 - Source hashing walks only each pattern's literal base, not the whole task directory, so `sources = ["src/**"]` beside 40k unrelated files hits in 5 ms rather than 80 ms (#47).
 
 ## [1.2.0] - 2026-11-13

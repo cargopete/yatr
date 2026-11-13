@@ -23,6 +23,7 @@ use std::{
 };
 
 use blake3::Hasher;
+use console::style;
 use globset::GlobSetBuilder;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,7 @@ use walkdir::WalkDir;
 use crate::config::{CacheProtocol, Config, TaskConfig};
 use crate::error::{Result, YatrError};
 use crate::globs;
+use crate::output::errln;
 use crate::reapi;
 use crate::remote::RemoteCache;
 
@@ -305,7 +307,22 @@ impl Cache {
         }
 
         let key = key.to_string();
-        let outputs = self.capture_outputs(cwd, &config.outputs)?;
+        let (outputs, matched) = self.capture_outputs(cwd, &config.outputs)?;
+        let unmatched: Vec<&str> = config
+            .outputs
+            .iter()
+            .zip(matched)
+            .filter(|(_, m)| !*m)
+            .map(|(p, _)| p.as_str())
+            .collect();
+        if !unmatched.is_empty() {
+            errln!(
+                "{} task '{task_name}': outputs pattern(s) captured no files: {}. \
+                 A cache hit will restore nothing for them",
+                style("warning:").yellow().bold(),
+                unmatched.join(", ")
+            );
+        }
 
         let result = ActionResult {
             key: key.clone(),
@@ -733,7 +750,7 @@ impl Cache {
         }
         let mut hasher = Hasher::new();
         hasher.update(key.as_bytes());
-        for path in Self::collect_output_files(cwd, &config.outputs) {
+        for path in Self::collect_output_files(cwd, &config.outputs).0 {
             let rel = path.strip_prefix(cwd).unwrap_or(&path);
             Self::update_field(&mut hasher, rel.to_string_lossy().as_bytes());
             let content = std::fs::read_link(&path)
@@ -887,10 +904,16 @@ impl Cache {
         Ok(hasher.finalize().to_hex().to_string())
     }
 
-    /// Capture the files matched by the output patterns into the CAS.
-    fn capture_outputs(&self, cwd: &Path, patterns: &[String]) -> Result<Vec<OutputEntry>> {
+    /// Capture the files matched by the output patterns into the CAS, with a
+    /// per-pattern flag saying whether that pattern captured anything.
+    fn capture_outputs(
+        &self,
+        cwd: &Path,
+        patterns: &[String],
+    ) -> Result<(Vec<OutputEntry>, Vec<bool>)> {
         let mut entries = Vec::new();
-        for path in Self::collect_output_files(cwd, patterns) {
+        let (files, matched) = Self::collect_output_files(cwd, patterns);
+        for path in files {
             let Ok(rel) = path.strip_prefix(cwd) else {
                 continue;
             };
@@ -911,7 +934,7 @@ impl Cache {
             });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(entries)
+        Ok((entries, matched))
     }
 
     /// Restore captured outputs to disk. Returns `false` if any blob is
@@ -989,7 +1012,21 @@ impl Cache {
     /// Unlike source hashing this does **not** consult `.gitignore` — declared
     /// outputs (`target/`, `dist/`, …) are routinely gitignored and must still
     /// be captured. Symlinks below a declared output are kept as symlinks.
-    fn collect_output_files(cwd: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    /// Also returns, per pattern, whether it matched any file.
+    fn collect_output_files(cwd: &Path, patterns: &[String]) -> (Vec<PathBuf>, Vec<bool>) {
+        let mut files = Vec::new();
+        let mut matched = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let before = files.len();
+            Self::collect_pattern_outputs(cwd, pattern, &mut files);
+            matched.push(files.len() > before);
+        }
+        files.sort();
+        files.dedup();
+        (files, matched)
+    }
+
+    fn collect_pattern_outputs(cwd: &Path, pattern: &str, files: &mut Vec<PathBuf>) {
         fn walk_dir_files(root: &Path, out: &mut Vec<PathBuf>) {
             for entry in WalkDir::new(root)
                 .follow_links(false)
@@ -1003,47 +1040,41 @@ impl Cache {
             }
         }
 
-        let mut files = Vec::new();
-        for pattern in patterns {
-            let (base, literal) = globs::literal_base(pattern);
-            let base = cwd.join(base);
-            if literal {
-                if cfg!(unix) && base.is_symlink() {
-                    files.push(base);
-                } else if base.is_dir() {
-                    walk_dir_files(&base, &mut files);
-                } else if base.is_file() {
-                    files.push(base);
-                }
-                continue;
+        let (base, literal) = globs::literal_base(pattern);
+        let base = cwd.join(base);
+        if literal {
+            if cfg!(unix) && base.is_symlink() {
+                files.push(base);
+            } else if base.is_dir() {
+                walk_dir_files(&base, files);
+            } else if base.is_file() {
+                files.push(base);
             }
-            let Ok(glob) = globs::compile(pattern) else {
+            return;
+        }
+        let Ok(glob) = globs::compile(pattern) else {
+            return;
+        };
+        let glob = glob.compile_matcher();
+        let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
+        while let Some(entry) = walk.next() {
+            let Ok(entry) = entry else {
                 continue;
             };
-            let glob = glob.compile_matcher();
-            let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
-            while let Some(entry) = walk.next() {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let Ok(rel) = entry.path().strip_prefix(cwd) else {
-                    continue;
-                };
-                if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
-                    continue;
-                }
-                let ft = entry.file_type();
-                if ft.is_dir() {
-                    walk_dir_files(entry.path(), &mut files);
-                    walk.skip_current_dir();
-                } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
-                    files.push(entry.into_path());
-                }
+            let Ok(rel) = entry.path().strip_prefix(cwd) else {
+                continue;
+            };
+            if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
+                continue;
+            }
+            let ft = entry.file_type();
+            if ft.is_dir() {
+                walk_dir_files(entry.path(), files);
+                walk.skip_current_dir();
+            } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
+                files.push(entry.into_path());
             }
         }
-        files.sort();
-        files.dedup();
-        files
     }
 
     /// Store a blob in the CAS, returning its BLAKE3 digest. Idempotent.

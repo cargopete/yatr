@@ -1019,3 +1019,19 @@ fn cache_clear_is_scoped_to_the_project() {
         "--all left b's entry"
     );
 }
+
+/// Regression (#41): an `outputs` pattern that captures nothing is reported.
+#[test]
+fn outputs_pattern_capturing_nothing_warns() {
+    let p = yatr_project(
+        "[tasks.a]\nrun = [\"true\"]\nsources = [\"yatr.toml\"]\noutputs = [\"out/never\", \"yatr.toml\"]\n",
+    );
+    let out = run_yatr(p.path(), &["a"]);
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("captured no files") && stderr.contains("out/never"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("yatr.toml"), "{stderr}");
+}

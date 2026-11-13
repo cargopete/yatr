@@ -53,6 +53,10 @@ store. On a **cache hit, they're restored** — delete `target/`, get a hit, and
 your artifacts come back. (Many runners "cache" only stdout and leave you with
 nothing on disk; yatr restores the real outputs.)
 
+An `outputs` pattern that captures no files after a successful run is reported
+with a warning, since a hit would then restore nothing for it; the result is
+still cached. `yatr check` cannot tell, as outputs exist only after a run.
+
 Restored files keep their permission bits, so a cached binary is still
 executable, and symlinks come back as symlinks (on Unix). Each file is written
 beside its destination and renamed into place, so a hit over existing outputs
