@@ -78,7 +78,8 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub cache: bool,
 
-    /// Cache directory (defaults to .yatr/cache)
+    /// Cache directory, relative to this file (defaults to the OS user cache
+    /// directory, e.g. `~/.cache/yatr` on Linux or `~/Library/Caches/yatr` on macOS)
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
 
@@ -200,6 +201,10 @@ pub struct TaskConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 
+    /// Names of ambient environment variables whose values are cache inputs
+    #[serde(default)]
+    pub env_inputs: Vec<String>,
+
     /// Working directory for this task
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -235,6 +240,23 @@ pub struct TaskConfig {
     /// Timeout in seconds
     #[serde(default)]
     pub timeout: Option<u64>,
+
+    /// Directory of the config file that declares this task; set on load.
+    #[serde(skip)]
+    pub base_dir: Option<PathBuf>,
+}
+
+impl TaskConfig {
+    /// Where the task runs: its `cwd` resolved against the declaring file's
+    /// directory. `None` when the task did not come from a file.
+    #[must_use]
+    pub fn working_dir(&self) -> Option<PathBuf> {
+        match (&self.base_dir, &self.cwd) {
+            (Some(base), Some(cwd)) => Some(base.join(cwd)),
+            (Some(base), None) => Some(base.clone()),
+            (None, cwd) => cwd.clone(),
+        }
+    }
 }
 
 impl Config {
@@ -254,8 +276,12 @@ impl Config {
         };
 
         let mut visited = std::collections::HashSet::new();
-        let config = Self::load_with_includes(&config_path, &mut visited)?;
+        let mut config = Self::load_with_includes(&config_path, &mut visited)?;
         config.validate()?;
+
+        if let Some(dir) = &config.settings.cache_dir {
+            config.settings.cache_dir = Some(Self::base_dir(&config_path).join(dir));
+        }
 
         Ok((config, config_path))
     }
@@ -265,6 +291,20 @@ impl Config {
         path: &Path,
         visited: &mut std::collections::HashSet<PathBuf>,
     ) -> Result<Self> {
+        Self::load_with_reader(path, visited, &|p| std::fs::read_to_string(p))
+    }
+
+    /// Like [`Config::load`], but reading each file (root and includes) through
+    /// `read`, e.g. from a git revision. The result is not validated.
+    pub fn load_via(path: &Path, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Self> {
+        Self::load_with_reader(path, &mut std::collections::HashSet::new(), read)
+    }
+
+    fn load_with_reader(
+        path: &Path,
+        visited: &mut std::collections::HashSet<PathBuf>,
+        read: &dyn Fn(&Path) -> std::io::Result<String>,
+    ) -> Result<Self> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if !visited.insert(canonical) {
             return Err(YatrError::InvalidConfig {
@@ -272,7 +312,7 @@ impl Config {
             });
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| YatrError::InvalidConfig {
+        let content = read(path).map_err(|e| YatrError::InvalidConfig {
             message: format!("failed to read included config {}: {e}", path.display()),
         })?;
         let mut config: Self = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
@@ -280,14 +320,26 @@ impl Config {
             path: path.to_path_buf(),
         })?;
 
-        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let base = Self::base_dir(path);
+        for task in config.tasks.values_mut() {
+            task.base_dir = Some(base.clone());
+        }
         for inc in std::mem::take(&mut config.include) {
             let inc_path = base.join(&inc);
-            let included = Self::load_with_includes(&inc_path, visited)?;
+            let included = Self::load_with_reader(&inc_path, visited, read)?;
             config.merge_from(included)?;
         }
 
         Ok(config)
+    }
+
+    /// The absolute directory holding a config file.
+    fn base_dir(path: &Path) -> PathBuf {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
     }
 
     /// Merge another config's tasks and env into this one. Duplicate task names

@@ -30,8 +30,10 @@ mod cli;
 mod config;
 mod error;
 mod executor;
+mod globs;
 mod graph;
 mod lsp;
+mod output;
 mod reapi;
 mod remote;
 mod script;
@@ -41,11 +43,12 @@ mod wasm;
 mod watch;
 
 use cache::Cache;
-use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};
+use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat, RunArgs};
 use config::Config;
 use error::{Result, YatrError};
 use executor::{Executor, ExecutorConfig, TaskResult};
 use graph::TaskGraph;
+use output::{errln, out, outln};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -74,8 +77,9 @@ async fn main() -> ExitCode {
         Err(e) => {
             // Render via miette for a clean message + diagnostic code/help,
             // rather than the raw `{:?}` struct debug.
-            eprintln!("{:?}", miette::Report::new(e));
-            ExitCode::FAILURE
+            let code = e.exit_code();
+            errln!("{:?}", miette::Report::new(e));
+            ExitCode::from(code)
         }
     }
 }
@@ -88,7 +92,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.effective_command() {
         EffectiveCommand::Subcommand(cmd) => run_command(cmd, &cli).await,
-        EffectiveCommand::RunTasks(tasks) => run_tasks(tasks, RunOpts::default(), &cli).await,
+        EffectiveCommand::RunTasks(tasks, opts) => run_tasks(tasks, opts, &cli).await,
         EffectiveCommand::None => {
             // No command - show help or list tasks
             let (config, _) = Config::load(cli.config.as_deref())?;
@@ -101,33 +105,13 @@ async fn run(cli: Cli) -> Result<()> {
 
 async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
     match cmd {
-        Commands::Run {
-            tasks,
-            dry_run,
-            force,
-            parallel,
-            shell,
-            json,
-            profile,
-            affected,
-            trace_io,
-        } => {
+        Commands::Run { tasks, opts } => {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
                 let graph = TaskGraph::from_config(&config)?;
                 print_task_list(&graph, &config, &ListFormat::Table, false);
                 Ok(())
             } else {
-                let opts = RunOpts {
-                    dry_run: *dry_run,
-                    force: *force,
-                    parallel: *parallel,
-                    shell: *shell,
-                    json: *json,
-                    profile: profile.clone(),
-                    affected: affected.clone(),
-                    trace_io: *trace_io,
-                };
                 run_tasks(tasks, opts, cli).await
             }
         }
@@ -140,8 +124,9 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
         }
 
         Commands::Watch { task, clear } => {
-            let (config, _) = Config::load(cli.config.as_deref())?;
+            let (mut config, _) = Config::load(cli.config.as_deref())?;
             let graph = TaskGraph::from_config(&config)?;
+            apply_toolchains(&mut config).await?;
 
             let exec_config = ExecutorConfig {
                 verbose: cli.verbose,
@@ -149,7 +134,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
                 ..Default::default()
             };
 
-            watch::watch_and_run(&config, &graph, task, exec_config).await
+            watch::watch_and_run(&config, &graph, task, exec_config, *clear).await
         }
 
         Commands::Graph { task, format } => {
@@ -169,7 +154,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             let schema = schemars::schema_for!(Config);
             let json = serde_json::to_string_pretty(&schema)
                 .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
-            println!("{json}");
+            outln!("{json}");
             Ok(())
         }
 
@@ -187,100 +172,18 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
+    let builtins = cli::builtin_names();
     for name in graph.task_names() {
-        let Some(task) = config.get_task(name) else {
-            continue;
-        };
-        let base = task.cwd.clone().unwrap_or_else(|| ".".into());
-
-        // Referenced paths must exist.
-        if let Some(cwd) = &task.cwd {
-            if !cwd.is_dir() {
-                errors.push(format!(
-                    "task '{name}': cwd '{}' does not exist",
-                    cwd.display()
-                ));
-            }
-        }
-        if let Some(wasm) = &task.wasm {
-            let wasm_str = wasm.to_string_lossy();
-            if !wasm::is_remote_ref(&wasm_str) {
-                let resolved = if wasm.is_absolute() {
-                    wasm.clone()
-                } else {
-                    base.join(wasm)
-                };
-                if !resolved.is_file() {
-                    errors.push(format!(
-                        "task '{name}': wasm plugin '{}' not found",
-                        resolved.display()
-                    ));
-                }
-            }
-        }
-
-        // Config smells worth a nudge.
-        if !task.outputs.is_empty() && task.no_cache {
-            warnings.push(format!(
-                "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
-            ));
-        }
-        // A `sources` pattern matching nothing contributes nothing to the
-        // cache key, so the task silently stops invalidating. Nearly always a
-        // typo or a path that moved.
-        if !task.sources.is_empty() && !task.no_cache {
-            match Cache::unmatched_source_patterns(&base, &task.sources) {
-                Ok(unmatched) if !unmatched.is_empty() => {
-                    warnings.push(format!(
-                        "task '{name}': sources pattern(s) match no files: {}. \
-                         They contribute nothing to the cache key, so the task \
-                         will not re-run when they change",
-                        unmatched.join(", ")
-                    ));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warnings.push(format!("task '{name}': could not check sources: {e}"));
-                }
-            }
-        }
-
-        if !task.shell.unwrap_or(false) {
-            for cmd in &task.run {
-                if let Some(syntax) = config::shell_syntax(cmd) {
-                    warnings.push(format!(
-                        "task '{name}': `{cmd}` uses shell syntax (`{syntax}`) but the task \
-                         does not set `shell = true`, so it is passed to the program literally"
-                    ));
-                }
-            }
-        }
-        let has_commands = !task.run.is_empty() || task.script.is_some() || task.wasm.is_some();
-        if config.settings.cache
-            && has_commands
-            && task.sources.is_empty()
-            && !task.no_cache
-            && !task.foreground
-        {
-            warnings.push(format!(
-                "task '{name}': declares no `sources`, so yatr cannot tell when its inputs \
-                 change. Declare `sources`, or set `no_cache = true` if it should always run"
-            ));
-        }
-
-        if task.foreground && task.run.len() > 1 {
-            warnings.push(format!(
-                "task '{name}': foreground tasks only run their first command ({} given)",
-                task.run.len()
-            ));
+        if let Some(task) = config.get_task(name) {
+            check_task(name, task, &config, &builtins, &mut errors, &mut warnings);
         }
     }
 
     for w in &warnings {
-        println!("{} {w}", style("warning:").yellow().bold());
+        outln!("{} {w}", style("warning:").yellow().bold());
     }
     for e in &errors {
-        println!("{} {e}", style("error:").red().bold());
+        outln!("{} {e}", style("error:").red().bold());
     }
 
     if errors.is_empty() {
@@ -289,7 +192,7 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         } else {
             format!(", {} warning(s)", warnings.len())
         };
-        println!(
+        outln!(
             "{} {} is valid ({} tasks{suffix})",
             style("✓").green(),
             path.display(),
@@ -303,37 +206,141 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     }
 }
 
-fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
-    let (config, _) = Config::load(cli.config.as_deref())?;
-    let graph = TaskGraph::from_config(&config)?;
-    let changed = affected::changed_files(git_ref)?;
-    let affected = affected::affected_tasks(&graph, &changed);
+/// The per-task checks behind `yatr check`.
+fn check_task(
+    name: &str,
+    task: &config::TaskConfig,
+    config: &Config,
+    builtins: &[String],
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    if builtins.iter().any(|b| b == name) {
+        warnings.push(format!(
+            "task '{name}': `yatr {name}` runs the builtin subcommand, not this task; \
+             use `yatr run {name}` or rename it"
+        ));
+    }
+    let base = task.working_dir().unwrap_or_else(|| ".".into());
 
-    let mut names: Vec<&str> = affected.iter().map(String::as_str).collect();
+    // Referenced paths must exist.
+    if task.cwd.is_some() && !base.is_dir() {
+        errors.push(format!(
+            "task '{name}': cwd '{}' does not exist",
+            base.display()
+        ));
+    }
+    if let Some(wasm) = &task.wasm {
+        let wasm_str = wasm.to_string_lossy();
+        if !wasm::is_remote_ref(&wasm_str) {
+            let resolved = if wasm.is_absolute() {
+                wasm.clone()
+            } else {
+                base.join(wasm)
+            };
+            if !resolved.is_file() {
+                errors.push(format!(
+                    "task '{name}': wasm plugin '{}' not found",
+                    resolved.display()
+                ));
+            }
+        }
+    }
+
+    // Config smells worth a nudge.
+    if !task.outputs.is_empty() && task.no_cache {
+        warnings.push(format!(
+            "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
+        ));
+    }
+    if !task.outputs.is_empty() && task.sources.is_empty() && !task.no_cache {
+        warnings.push(format!(
+            "task '{name}': declares `outputs` but no `sources` — a task without sources is never cached"
+        ));
+    }
+    // A `sources` pattern matching nothing contributes nothing to the
+    // cache key, so the task silently stops invalidating. Nearly always a
+    // typo or a path that moved.
+    if !task.sources.is_empty() && !task.no_cache {
+        match Cache::unmatched_source_patterns(&base, &task.sources) {
+            Ok(unmatched) if !unmatched.is_empty() => {
+                warnings.push(format!(
+                    "task '{name}': sources pattern(s) match no files: {}. \
+                     They contribute nothing to the cache key, so the task \
+                     will not re-run when they change",
+                    unmatched.join(", ")
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warnings.push(format!("task '{name}': could not check sources: {e}"));
+            }
+        }
+    }
+
+    if !task.shell.unwrap_or(false) {
+        for cmd in &task.run {
+            if let Some(syntax) = config::shell_syntax(cmd) {
+                warnings.push(format!(
+                    "task '{name}': `{cmd}` uses shell syntax (`{syntax}`) but the task \
+                     does not set `shell = true`, so it is passed to the program literally"
+                ));
+            }
+        }
+    }
+    let has_commands = !task.run.is_empty() || task.script.is_some() || task.wasm.is_some();
+    if config.settings.cache
+        && has_commands
+        && task.sources.is_empty()
+        && !task.no_cache
+        && !task.foreground
+    {
+        warnings.push(format!(
+            "task '{name}': declares no `sources`, so yatr cannot tell when its inputs \
+             change. Declare `sources`, or set `no_cache = true` if it should always run"
+        ));
+    }
+
+    if task.foreground && task.run.len() > 1 {
+        warnings.push(format!(
+            "task '{name}': foreground tasks only run their first command ({} given)",
+            task.run.len()
+        ));
+    }
+}
+
+/// The directory yatr was started in, in the canonical form config paths use.
+fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
+    let (config, config_path) = Config::load(cli.config.as_deref())?;
+    let graph = TaskGraph::from_config(&config)?;
+    let affected = affected::detect(git_ref, &config, &config_path, &graph)?;
+
+    let mut names: Vec<&str> = affected.tasks.iter().map(String::as_str).collect();
     names.sort_unstable();
 
     match format {
         ListFormat::Json => print_json(&serde_json::json!({
             "ref": git_ref,
-            "changed_files": changed,
+            "merge_base": affected.merge_base,
+            "changed_files": affected.changed,
             "affected": names,
         }))?,
         ListFormat::Plain => {
             for name in names {
-                println!("{name}");
+                outln!("{name}");
             }
         }
         ListFormat::Table => {
             if names.is_empty() {
-                println!("{} No tasks affected since {git_ref}", style("✓").green());
+                outln!("{} No tasks affected since {git_ref}", style("✓").green());
             } else {
-                println!(
+                outln!(
                     "{}",
                     style(format!("Affected by changes since {git_ref}:")).bold()
                 );
-                println!();
+                outln!();
                 for name in names {
-                    println!("  {}", style(name).cyan().bold());
+                    outln!("  {}", style(name).cyan().bold());
                 }
             }
         }
@@ -341,55 +348,56 @@ fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result
     Ok(())
 }
 
-/// Options for a `run` invocation.
-#[derive(Default)]
-struct RunOpts {
-    dry_run: bool,
-    force: bool,
-    parallel: usize,
-    shell: bool,
-    json: bool,
-    profile: Option<std::path::PathBuf>,
-    affected: Option<String>,
-    trace_io: bool,
-}
-
-async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
-    let (mut config, _) = Config::load(cli.config.as_deref())?;
-    let graph = TaskGraph::from_config(&config)?;
-
-    // Ensure pinned toolchains are installed and put them on the task PATH.
-    if !config.toolchain.is_empty() && !opts.dry_run {
-        let bins = toolchain::ensure_all(&config.toolchain, &toolchain::toolchains_dir()).await?;
-        if !bins.is_empty() {
-            let mut paths = bins;
-            if let Some(existing) = std::env::var_os("PATH") {
-                paths.extend(std::env::split_paths(&existing));
-            }
-            if let Ok(joined) = std::env::join_paths(&paths) {
-                config
-                    .env
-                    .insert("PATH".to_string(), joined.to_string_lossy().into_owned());
-            }
+/// Ensure pinned toolchains are installed and put them on the task PATH.
+async fn apply_toolchains(config: &mut Config) -> Result<()> {
+    if config.toolchain.is_empty() {
+        return Ok(());
+    }
+    let bins = toolchain::ensure_all(&config.toolchain, &toolchain::toolchains_dir()).await?;
+    if !bins.is_empty() {
+        let mut paths = bins;
+        if let Some(existing) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        if let Ok(joined) = std::env::join_paths(&paths) {
+            config
+                .env
+                .insert("PATH".to_string(), joined.to_string_lossy().into_owned());
         }
     }
+    Ok(())
+}
 
-    // --affected: keep only the requested tasks that changes since the ref touch.
+async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
+    let (mut config, config_path) = Config::load(cli.config.as_deref())?;
+    let mut graph = TaskGraph::from_config(&config)?;
+    graph.execution_order_all(tasks)?;
+
+    // --affected: run only affected tasks, dependencies included; unaffected
+    // dependencies are dropped from the graph rather than run.
     let filtered: Vec<String>;
     let tasks: &[String] = if let Some(git_ref) = &opts.affected {
-        let changed = affected::changed_files(git_ref)?;
-        let set = affected::affected_tasks(&graph, &changed);
+        let set = affected::detect(git_ref, &config, &config_path, &graph)?.tasks;
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
         if filtered.is_empty() && !opts.json {
-            println!(
+            outln!(
                 "{} No requested tasks affected since {git_ref} — nothing to do",
                 style("✓").green()
             );
         }
+        config.tasks.retain(|name, _| set.contains(name));
+        for task in config.tasks.values_mut() {
+            task.depends.retain(|d| set.contains(d));
+        }
+        graph = TaskGraph::from_config(&config)?;
         &filtered
     } else {
         tasks
     };
+
+    if !opts.dry_run {
+        apply_toolchains(&mut config).await?;
+    }
 
     // JSON dry-run: emit the execution plan rather than running anything.
     if opts.json && opts.dry_run {
@@ -434,16 +442,17 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
         verbose: cli.verbose,
         json: opts.json,
         trace_io: opts.trace_io,
+        keep_going: opts.keep_going,
         run_start: std::time::Instant::now(),
     };
 
     let executor = Executor::new(config, exec_config, cache);
-
     let mut all_results = Vec::new();
-    for task in tasks {
-        let mut results = executor.execute(&graph, task).await?;
-        all_results.append(&mut results);
-    }
+    let outcome = if tasks.is_empty() {
+        Ok(())
+    } else {
+        executor.execute_into(&graph, tasks, &mut all_results).await
+    };
 
     if opts.json {
         print_run_json(&all_results)?;
@@ -451,11 +460,11 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     if let Some(path) = &opts.profile {
         write_profile(&all_results, path)?;
         if !opts.json {
-            println!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
+            outln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
         }
     }
 
-    Ok(())
+    outcome
 }
 
 /// Write a Chrome Trace Event Format file (viewable in `chrome://tracing` or
@@ -504,6 +513,8 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
                 "duration_ms": ms(r.duration),
                 "output": r.output,
                 "error": r.error,
+                "exit_code": r.exit_code,
+                "cancelled": r.cancelled,
             })
         })
         .collect();
@@ -512,9 +523,15 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
         "tasks": tasks,
         "summary": {
             "succeeded": results.iter().filter(|r| r.success).count(),
-            "failed": results.iter().filter(|r| !r.success).count(),
+            "failed": results.iter().filter(|r| !r.success && !r.cancelled).count(),
+            "cancelled": results.iter().filter(|r| r.cancelled).count(),
             "cached": results.iter().filter(|r| r.cached).count(),
-            "duration_ms": results.iter().map(|r| ms(r.duration)).sum::<u64>(),
+            "duration_ms": results
+                .iter()
+                .map(|r| ms(r.start_offset + r.duration))
+                .max()
+                .unwrap_or_default()
+                .saturating_sub(results.iter().map(|r| ms(r.start_offset)).min().unwrap_or_default()),
         }
     });
 
@@ -525,42 +542,41 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
 fn print_json(value: &serde_json::Value) -> Result<()> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
-    println!("{text}");
+    outln!("{text}");
     Ok(())
 }
 
 async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
-    let cache_dir = cli.config.as_ref().and_then(|_| {
-        Config::load(cli.config.as_deref())
-            .ok()
-            .and_then(|(c, _)| c.settings.cache_dir)
-    });
+    // Cache commands work without a config, so a missing one means the default dir.
+    let cache_dir = Config::load(cli.config.as_deref())
+        .ok()
+        .and_then(|(c, _)| c.settings.cache_dir);
 
     let cache = cache::Cache::new(cache_dir)?;
 
     match cmd {
         CacheCommands::Stats => {
             let stats = cache.stats()?;
-            println!("Cache: {stats}");
+            outln!("Cache: {stats}");
         }
 
         CacheCommands::Clear { task } => {
             if let Some(task) = task {
                 let removed = cache.clear_task(task)?;
-                println!(
+                outln!(
                     "{} Cleared {removed} cache {} for task '{task}'",
                     style("✓").green(),
                     if removed == 1 { "entry" } else { "entries" },
                 );
             } else {
                 cache.clear().await?;
-                println!("{} Cache cleared", style("✓").green());
+                outln!("{} Cache cleared", style("✓").green());
             }
         }
 
         CacheCommands::Path => {
             let stats = cache.stats()?;
-            println!("{}", stats.cache_dir.display());
+            outln!("{}", stats.cache_dir.display());
         }
     }
 
@@ -570,8 +586,8 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
 fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show_deps: bool) {
     match format {
         ListFormat::Table => {
-            println!("{}", style("Available tasks:").bold());
-            println!();
+            outln!("{}", style("Available tasks:").bold());
+            outln!();
 
             let mut names: Vec<_> = graph.task_names().collect();
             names.sort_unstable();
@@ -582,7 +598,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                 if let Some(task) = graph.get_task(name) {
                     let desc = task.config.desc.as_deref().unwrap_or("");
 
-                    print!(
+                    out!(
                         "  {}{}  {}",
                         style(name).cyan().bold(),
                         " ".repeat(max_name_len - name.len()),
@@ -592,7 +608,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                     if show_deps {
                         if let Some(deps) = graph.dependencies(name) {
                             if !deps.is_empty() {
-                                print!(
+                                out!(
                                     " {}",
                                     style(format!("[deps: {}]", deps.join(", "))).yellow().dim()
                                 );
@@ -600,7 +616,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                         }
                     }
 
-                    println!();
+                    outln!();
                 }
             }
         }
@@ -621,14 +637,14 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                     tasks.insert(name.to_string(), serde_json::Value::Object(obj));
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&tasks).unwrap());
+            outln!("{}", serde_json::to_string_pretty(&tasks).unwrap());
         }
 
         ListFormat::Plain => {
             let mut names: Vec<_> = graph.task_names().collect();
             names.sort_unstable();
             for name in names {
-                println!("{name}");
+                outln!("{name}");
             }
         }
     }
@@ -643,16 +659,16 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
 
     match format {
         GraphFormat::Text => {
-            println!("{}", style("Task dependency graph:").bold());
-            println!();
+            outln!("{}", style("Task dependency graph:").bold());
+            outln!();
 
             for task_node in &tasks {
                 let deps = graph.dependencies(&task_node.name).unwrap_or_default();
 
                 if deps.is_empty() {
-                    println!("  {}", style(&task_node.name).cyan().bold());
+                    outln!("  {}", style(&task_node.name).cyan().bold());
                 } else {
-                    println!(
+                    outln!(
                         "  {} {} {}",
                         style(&task_node.name).cyan().bold(),
                         style("←").dim(),
@@ -663,19 +679,19 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
         }
 
         GraphFormat::Dot => {
-            println!("digraph yatr {{");
-            println!("  rankdir=LR;");
-            println!("  node [shape=box];");
+            outln!("digraph yatr {{");
+            outln!("  rankdir=LR;");
+            outln!("  node [shape=box];");
 
             for task_node in &tasks {
                 if let Some(deps) = graph.dependencies(&task_node.name) {
                     for dep in deps {
-                        println!("  \"{}\" -> \"{}\";", dep, task_node.name);
+                        outln!("  \"{}\" -> \"{}\";", dep, task_node.name);
                     }
                 }
             }
 
-            println!("}}");
+            outln!("}}");
         }
 
         GraphFormat::Json => {
@@ -703,7 +719,7 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
                 "edges": edges,
             });
 
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            outln!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
     }
 
@@ -711,17 +727,22 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
 }
 
 fn init_config(force: bool) -> Result<()> {
-    let path = std::path::Path::new("YATR.toml");
+    let name = config::CONFIG_FILES
+        .iter()
+        .copied()
+        .find(|n| std::path::Path::new(n).exists())
+        .unwrap_or(config::CONFIG_FILES[0]);
+    let path = std::path::Path::new(name);
 
     if path.exists() && !force {
         return Err(YatrError::Io(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
-            "YATR.toml already exists (use --force to overwrite)",
+            format!("{name} already exists (use --force to overwrite)"),
         )));
     }
 
-    let template = r#"# YATR.toml - Task runner configuration
-# See https://github.com/yourusername/yatr for documentation
+    let template = r#"# yatr.toml - Task runner configuration
+# See https://cargopete.github.io/yatr/ for documentation
 
 [env]
 # Global environment variables
@@ -735,33 +756,33 @@ fn init_config(force: bool) -> Result<()> {
 [tasks.fmt]
 desc = "Format code"
 run = ["cargo fmt"]
+no_cache = true             # rewrites files, so always run it
 
 [tasks.lint]
 desc = "Run clippy"
 run = ["cargo clippy -- -D warnings"]
+sources = ["**/*.rs", "Cargo.*"]
 
 [tasks.test]
 desc = "Run tests"
 run = ["cargo test"]
+sources = ["**/*.rs", "Cargo.*"]
 
-[tasks.check]
+[tasks.ci]
 desc = "Format, lint, and test"
 depends = ["fmt", "lint", "test"]
 run = []
 
 [tasks.build]
 desc = "Build release binary"
-depends = ["check"]
+depends = ["ci"]
 run = ["cargo build --release"]
+sources = ["**/*.rs", "Cargo.*"]
 "#;
 
     std::fs::write(path, template)?;
 
-    println!(
-        "{} Created {}",
-        style("✓").green(),
-        style("YATR.toml").bold()
-    );
+    outln!("{} Created {}", style("✓").green(), style(name).bold());
 
     Ok(())
 }
