@@ -96,6 +96,14 @@ impl Echo {
         });
     }
 
+    /// Show a command about to run, for `--verbose`.
+    fn command(&self, cmd: &str) {
+        for (i, line) in cmd.lines().enumerate() {
+            let lead = if i == 0 { "$ " } else { "  " };
+            self.line(&style(format!("{lead}{line}")).dim().to_string(), true);
+        }
+    }
+
     /// Print output that was not streamed (a cache hit, a script, a plugin).
     fn replay(&self, output: &str) {
         let body = output.trim_end();
@@ -314,8 +322,10 @@ pub struct ExecutorConfig {
     pub cwd: std::path::PathBuf,
     /// Use shell for commands
     pub shell: bool,
-    /// Verbose output
+    /// Print each command before it runs
     pub verbose: bool,
+    /// Print task output and failures only: no status lines, spinner or summary
+    pub quiet: bool,
     /// Suppress human output; caller emits machine-readable JSON instead
     pub json: bool,
     /// Warn when a task writes files outside its declared `outputs`
@@ -335,6 +345,7 @@ impl Default for ExecutorConfig {
             cwd: std::env::current_dir().unwrap_or_default(),
             shell: false,
             verbose: false,
+            quiet: false,
             json: false,
             trace_io: false,
             run_start: Instant::now(),
@@ -531,7 +542,7 @@ impl Executor {
                     .get_task(&finished)
                     .is_some_and(|t| t.config.allow_failure);
 
-            if !self.exec_config.json {
+            if !self.exec_config.json && (failed || !self.exec_config.quiet) {
                 Self::print_task_result(&result);
             }
             if failed && failure.is_none() {
@@ -561,7 +572,7 @@ impl Executor {
             );
         }
 
-        if !self.exec_config.json {
+        if !self.exec_config.json && !self.exec_config.quiet {
             let planned = in_degree
                 .keys()
                 .filter(|name| !graph.get_task(name).is_some_and(is_aggregate))
@@ -628,7 +639,7 @@ impl Executor {
         run: TaskRun<'_>,
     ) -> Result<TaskResult> {
         // Progress spinner is human-only; suppress it in JSON mode.
-        let pb = (!exec_config.json).then(|| {
+        let pb = (!exec_config.json && !exec_config.quiet).then(|| {
             let pb = mp.add(ProgressBar::new_spinner());
             let style = ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
@@ -985,6 +996,9 @@ impl Executor {
             reason: "Foreground task must have at least one command".to_string(),
         })?;
 
+        if let Some(echo) = ctx.sink.echo.as_ref().filter(|_| exec_config.verbose) {
+            echo.command(cmd);
+        }
         let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command
@@ -1102,6 +1116,9 @@ impl Executor {
         exec_config: &ExecutorConfig,
         ctx: &Ctx,
     ) -> Result<()> {
+        if let Some(echo) = ctx.sink.echo.as_ref().filter(|_| exec_config.verbose) {
+            echo.command(cmd);
+        }
         let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command

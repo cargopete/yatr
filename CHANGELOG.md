@@ -12,6 +12,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `-q` now suppresses status lines, the spinner and the summary while keeping task output and failures, and `-v` prints each command before it runs; the two conflict. Both were accepted and ignored before (#43).
 - Task output lines starting with `::` are printed without the task-name prefix, so GitHub Actions workflow commands and log groups work again (#49).
 
 ## [1.2.0] - 2026-11-13

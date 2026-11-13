@@ -40,11 +40,16 @@ dependency runs once.
 
 ```bash
   -c, --config <PATH>  Config file path
-  -v, --verbose        Verbose output
-  -q, --quiet          Suppress output
+  -v, --verbose        Print each command before it runs
+  -q, --quiet          Only task output and errors: no status lines or summary
       --cwd <DIR>      Working directory
       --no-color       Disable colours
 ```
+
+`-v` prints each command, as `$ <command>`, on stderr just before it runs.
+`-q` drops the per-task status lines, the spinner and the closing summary; task
+output, a failed task's `✗` line and its error are still printed. The two cannot
+be combined.
 
 ## Examples
 

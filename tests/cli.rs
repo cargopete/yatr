@@ -1076,3 +1076,42 @@ fn several_tasks_keep_the_prefix_and_status_stays_off_stdout() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("2 tasks completed"), "{stderr}");
 }
+
+/// `-q` drops status and summary but keeps the task's output and its failures.
+#[cfg(unix)]
+#[test]
+fn quiet_keeps_output_and_errors_only() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\"]\n",
+        &["-q", "gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+
+    let (_dir, out) = run_in(
+        "[tasks.bad]\nshell = true\nno_cache = true\nrun = [\"echo why >&2; exit 4\"]\n",
+        &["-q", "bad"],
+    );
+    assert_eq!(out.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("why"), "{stderr}");
+    assert!(stderr.contains("✗ bad"), "{stderr}");
+    assert!(stderr.contains("exit code 4"), "{stderr}");
+    assert!(!stderr.contains("succeeded"), "summary under -q: {stderr}");
+}
+
+/// `-v` prints each command before it runs, on stderr.
+#[test]
+fn verbose_prints_commands() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\", \"echo again\"]\n",
+        &["-v", "gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\nagain\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(lines.contains(&"$ echo hello"), "{stderr}");
+    assert!(lines.contains(&"$ echo again"), "{stderr}");
+}
