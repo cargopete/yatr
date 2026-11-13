@@ -166,9 +166,11 @@ Available Rhai functions:
 
 ### Caching
 
-Tasks are cached by default based on:
+A task that declares `sources` is cached, keyed on:
 - Task configuration (commands, env vars)
-- Source file contents (if `sources` specified)
+- Source file contents
+
+A task with no `sources` has no declared inputs and is never cached.
 
 ```toml
 [tasks.build]

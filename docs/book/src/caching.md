@@ -4,6 +4,12 @@ yatr's cache is **content-addressed**: a task's cache key is the BLAKE3 hash of
 its commands, environment, working directory, and the **contents** of its
 declared `sources`. Unchanged inputs → a cache hit; changed inputs → a real run.
 
+**Only tasks with `sources` are cached.** A task without them has no declared
+inputs, so nothing could ever invalidate its entry; it runs every time, and
+`yatr check` warns if it declares `outputs`. Local entries are scoped to the
+project directory, so two checkouts never serve each other's results; a
+[remote cache](./remote-cache.md) shares keys across checkouts by design.
+
 ```toml
 [tasks.build]
 sources = ["src/**", "Cargo.toml", "Cargo.lock"]

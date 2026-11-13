@@ -337,3 +337,51 @@ fn cache_hit_restores_exec_bit_and_symlinks() {
         "a globbed symlink came back as a regular file"
     );
 }
+
+fn yatr_project(toml: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{toml}"),
+    )
+    .unwrap();
+    dir
+}
+
+fn was_cached(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stdout).contains("✓ cached")
+}
+
+/// A task with no `sources` has undeclared inputs, so it is never cached.
+#[test]
+fn sourceless_task_is_not_cached() {
+    let p = yatr_project("[tasks.gate]\nrun = [\"test -f ok\"]\n");
+    std::fs::write(p.path().join("ok"), "").unwrap();
+    assert!(run_yatr(p.path(), &["gate"]).status.success());
+    std::fs::remove_file(p.path().join("ok")).unwrap();
+    let out = run_yatr(p.path(), &["gate"]);
+    assert!(
+        !out.status.success(),
+        "a sourceless task replayed a stale pass"
+    );
+    assert!(!was_cached(&out));
+}
+
+/// Two projects sharing a cache directory never serve each other's entries.
+#[test]
+fn identical_tasks_in_two_projects_do_not_share_local_entries() {
+    let shared = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[settings]\ncache_dir = \"{}\"\n[tasks.gate]\nrun = [\"test -f ok\"]\nsources = [\"yatr.toml\"]\n",
+        shared.path().display()
+    );
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    std::fs::write(a.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(b.path().join("yatr.toml"), &toml).unwrap();
+    std::fs::write(a.path().join("ok"), "").unwrap();
+
+    assert!(run_yatr(a.path(), &["gate"]).status.success());
+    let out = run_yatr(b.path(), &["gate"]);
+    assert!(!out.status.success(), "b was served a's cached pass");
+}

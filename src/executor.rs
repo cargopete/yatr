@@ -262,7 +262,7 @@ impl Executor {
         // Check cache
         if !exec_config.force {
             if let Some(cache) = cache {
-                if !task.config.no_cache {
+                if Cache::caches(&task.config) {
                     if let Some(cached) = cache.get(&task.name, &task.config, &cwd).await? {
                         return Ok(TaskResult {
                             name: task.name.clone(),
@@ -331,7 +331,7 @@ impl Executor {
             Ok(output) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
                 if let Some(cache) = cache {
-                    if !task.config.no_cache && !task.config.foreground {
+                    if Cache::caches(&task.config) && !task.config.foreground {
                         let _ = cache
                             .put(&task.name, &task.config, &cwd, &output, duration)
                             .await;

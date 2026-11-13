@@ -150,6 +150,13 @@ impl Cache {
         self.enabled
     }
 
+    /// Whether a task's results are cached at all. A task without `sources`
+    /// has no declared inputs, so nothing could ever invalidate its entry.
+    #[must_use]
+    pub const fn caches(task: &TaskConfig) -> bool {
+        !task.no_cache && !task.sources.is_empty()
+    }
+
     /// Look up a cached result for a task and, on a hit, restore its outputs.
     ///
     /// Returns `None` (a miss) when there is no entry, the entry is for a
@@ -168,7 +175,7 @@ impl Cache {
         let key = Self::compute_key(task_name, config, cwd)?;
 
         // Local action cache first.
-        let result = if let Some(result) = self.load_local_ac(&key, task_name) {
+        let result = if let Some(result) = self.load_local_ac(&key, task_name, cwd) {
             Some(result)
         } else {
             // Local miss: try the remote, populating the local cache on a hit.
@@ -189,8 +196,8 @@ impl Cache {
     }
 
     /// Load and validate a local action-cache entry for `key`.
-    fn load_local_ac(&self, key: &str, task_name: &str) -> Option<ActionResult> {
-        let bytes = std::fs::read(self.ac_path(key)).ok()?;
+    fn load_local_ac(&self, key: &str, task_name: &str, cwd: &Path) -> Option<ActionResult> {
+        let bytes = std::fs::read(self.ac_path(key, cwd)).ok()?;
         self.extract_verified(&bytes, task_name)
     }
 
@@ -281,7 +288,7 @@ impl Cache {
         }
 
         // Persist the action result locally for next time.
-        Self::write_atomic(&self.ac_path(key), &ac_bytes).ok()?;
+        Self::write_atomic(&self.ac_path(key, cwd), &ac_bytes).ok()?;
         Some(result)
     }
 
@@ -319,7 +326,7 @@ impl Cache {
         };
         let bytes = serde_json::to_vec_pretty(&signed).map_err(|e| Self::ser_err(&e))?;
 
-        Self::write_atomic(&self.ac_path(&key), &bytes)?;
+        Self::write_atomic(&self.ac_path(&key, cwd), &bytes)?;
 
         // Write-through to the remote (non-fatal).
         self.upload_to_remote(&key, &signed.result, bytes, cwd)
@@ -500,7 +507,7 @@ impl Cache {
         }
 
         let key = Self::compute_key(task_name, config, cwd)?;
-        let ac_path = self.ac_path(&key);
+        let ac_path = self.ac_path(&key, cwd);
         if ac_path.exists() {
             std::fs::remove_file(&ac_path)?;
         }
@@ -900,9 +907,16 @@ impl Cache {
         path.with_extension(format!("tmp.{}.{n}", std::process::id()))
     }
 
-    /// Path for an action-cache entry.
-    fn ac_path(&self, key: &str) -> PathBuf {
-        self.dir.join("ac").join(format!("{key}.json"))
+    /// Path for a local action-cache entry. The cache directory is shared by
+    /// every project on the machine, so the entry is scoped to the task's
+    /// directory; only the remote key is shared across checkouts.
+    fn ac_path(&self, key: &str, cwd: &Path) -> PathBuf {
+        let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let mut hasher = Hasher::new();
+        hasher.update(key.as_bytes());
+        hasher.update(dir.as_os_str().as_encoded_bytes());
+        let local = &hasher.finalize().to_hex()[..16];
+        self.dir.join("ac").join(format!("{local}.json"))
     }
 
     /// Path for a CAS blob.
@@ -1231,7 +1245,7 @@ mod tests {
             b"remote-bytes"
         );
         // And the action result is now cached locally for next time.
-        assert!(cache.ac_path(&key).exists());
+        assert!(cache.ac_path(&key, work.path()).exists());
     }
 
     #[tokio::test]
