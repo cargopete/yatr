@@ -160,8 +160,11 @@ pub async fn watch_and_run(
     // Set up watcher
     let mut watcher = TaskWatcher::new(task_name, &patterns, config.settings.watch_debounce_ms)?;
 
-    // Watch current directory
-    watcher.watch(&[std::env::current_dir()?])?;
+    let root = task
+        .config
+        .working_dir()
+        .map_or_else(std::env::current_dir, Ok)?;
+    watcher.watch(&[root])?;
 
     // Watch loop
     loop {

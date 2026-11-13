@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Task paths (`cwd`, `sources`, `outputs`, `wasm`, affected matching) and a relative `cache_dir` resolve against the directory of the file that declares them, not the shell's, so `yatr` behaves the same from a subdirectory and included files see their own paths; a missing task `cwd` now names the path (#19).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

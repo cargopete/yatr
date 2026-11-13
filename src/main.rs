@@ -191,16 +191,14 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         let Some(task) = config.get_task(name) else {
             continue;
         };
-        let base = task.cwd.clone().unwrap_or_else(|| ".".into());
+        let base = task.working_dir().unwrap_or_else(|| ".".into());
 
         // Referenced paths must exist.
-        if let Some(cwd) = &task.cwd {
-            if !cwd.is_dir() {
-                errors.push(format!(
-                    "task '{name}': cwd '{}' does not exist",
-                    cwd.display()
-                ));
-            }
+        if task.cwd.is_some() && !base.is_dir() {
+            errors.push(format!(
+                "task '{name}': cwd '{}' does not exist",
+                base.display()
+            ));
         }
         if let Some(wasm) = &task.wasm {
             let wasm_str = wasm.to_string_lossy();
@@ -280,11 +278,17 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     }
 }
 
+/// The directory yatr was started in, in the canonical form config paths use.
+fn shell_dir() -> Result<std::path::PathBuf> {
+    let dir = std::env::current_dir()?;
+    Ok(dir.canonicalize().unwrap_or(dir))
+}
+
 fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
     let (config, _) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
     let changed = affected::changed_files(git_ref)?;
-    let affected = affected::affected_tasks(&graph, &changed);
+    let affected = affected::affected_tasks(&graph, &changed, &shell_dir()?);
 
     let mut names: Vec<&str> = affected.iter().map(String::as_str).collect();
     names.sort_unstable();
@@ -355,7 +359,7 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     let filtered: Vec<String>;
     let tasks: &[String] = if let Some(git_ref) = &opts.affected {
         let changed = affected::changed_files(git_ref)?;
-        let set = affected::affected_tasks(&graph, &changed);
+        let set = affected::affected_tasks(&graph, &changed, &shell_dir()?);
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
         if filtered.is_empty() && !opts.json {
             println!(
@@ -507,11 +511,10 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 }
 
 async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
-    let cache_dir = cli.config.as_ref().and_then(|_| {
-        Config::load(cli.config.as_deref())
-            .ok()
-            .and_then(|(c, _)| c.settings.cache_dir)
-    });
+    // Cache commands work without a config, so a missing one means the default dir.
+    let cache_dir = Config::load(cli.config.as_deref())
+        .ok()
+        .and_then(|(c, _)| c.settings.cache_dir);
 
     let cache = cache::Cache::new(cache_dir)?;
 

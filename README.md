@@ -596,7 +596,7 @@ KEY = "value"
 # Global settings
 [settings]
 cache = true              # Enable caching (default: true)
-cache_dir = ".yatr"       # Cache directory
+cache_dir = ".yatr"       # Cache directory, relative to this file
 parallelism = 0           # Max parallel tasks (0 = CPU count)
 watch_debounce_ms = 300   # Watch debounce delay
 shell = "/bin/sh"         # Default shell when shell mode is enabled
@@ -626,7 +626,7 @@ wasm = "plugin.wasm"                 # WASM plugin (path, http(s):// or github:â
 depends = ["other-task"]             # Run these first
 parallel = false                     # Run commands in parallel
 env = { KEY = "value" }              # Task-specific env vars
-cwd = "./subdir"                     # Working directory
+cwd = "./subdir"                     # Working directory, relative to this file
 shell = false                        # Use shell for commands
 foreground = true                    # Inherit stdio (dev servers); not cached
 watch = ["**/*.rs"]                  # File patterns for watch mode
@@ -636,6 +636,10 @@ no_cache = false                     # Disable caching for this task
 allow_failure = false                # Continue on failure
 timeout = 300                        # Timeout in seconds
 ```
+
+Paths in a task (`cwd`, `sources`, `outputs`, `watch`, `wasm`) resolve against the directory
+of the file that declares it, so a task runs the same from any subdirectory and an included
+file's tasks see paths relative to that file.
 
 A JSON Schema for all of this is shipped (`yatr schema` / [`yatr.schema.json`](yatr.schema.json))
 and powers editor autocomplete + the [language server](#language-server).

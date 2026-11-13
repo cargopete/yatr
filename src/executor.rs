@@ -255,9 +255,17 @@ impl Executor {
         // Determine working directory (needed for cache key + output restore)
         let cwd = task
             .config
-            .cwd
-            .clone()
+            .working_dir()
             .unwrap_or_else(|| exec_config.cwd.clone());
+        if !cwd.is_dir() {
+            return Err(YatrError::InvalidConfig {
+                message: format!(
+                    "task '{}': working directory '{}' does not exist",
+                    task.name,
+                    cwd.display()
+                ),
+            });
+        }
 
         // Check cache
         if !exec_config.force {
