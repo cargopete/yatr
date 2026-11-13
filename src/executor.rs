@@ -380,7 +380,12 @@ impl Executor {
 
         let semaphore = Arc::new(Semaphore::new(self.parallelism()));
         let multi_progress = MultiProgress::new();
-        let name_width = tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
+        let name_width = tasks
+            .iter()
+            .filter(|t| !is_aggregate(t))
+            .map(|t| t.name.len())
+            .max()
+            .unwrap_or(0);
 
         // Ready-queue scheduling: a task starts the moment all of its
         // dependencies have completed, rather than waiting for its whole
@@ -451,12 +456,15 @@ impl Executor {
         F: Fn(&str) -> Fut + Sync,
         Fut: std::future::Future<Output = Result<Option<TaskResult>>> + Send + 'static,
     {
+        let started = Instant::now();
         let mut running = JoinSet::new();
-        for (name, remaining) in in_degree.iter() {
-            if *remaining == 0 {
-                running.spawn(spawn_one(name));
-            }
-        }
+        let mut ready: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, remaining)| **remaining == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        ready.sort_unstable();
+        Self::start(graph, ready, spawn_one, in_degree, dependents, &mut running);
 
         let first = all_results.len();
         let (mut signals, _active) = signals::subscribe();
@@ -507,27 +515,71 @@ impl Executor {
                 continue;
             }
 
-            // Unblock dependents whose final dependency just completed.
-            if let Some(deps) = dependents.get(&finished) {
-                for d in deps {
-                    if let Some(remaining) = in_degree.get_mut(d) {
-                        *remaining -= 1;
-                        if *remaining == 0 {
-                            running.spawn(spawn_one(d));
-                        }
-                    }
-                }
-            }
+            Self::start(
+                graph,
+                Self::release(&finished, in_degree, dependents),
+                spawn_one,
+                in_degree,
+                dependents,
+                &mut running,
+            );
         }
 
         if !self.exec_config.json {
-            self.print_summary(&all_results[first..], in_degree.len());
+            let planned = in_degree
+                .keys()
+                .filter(|name| !graph.get_task(name).is_some_and(is_aggregate))
+                .count();
+            self.print_summary(&all_results[first..], planned, started.elapsed());
         }
         match (interrupted, failure) {
             (Some(signal), _) => Err(YatrError::Interrupted { signal }),
             (None, Some(failure)) => Err(failure),
             (None, None) => Ok(()),
         }
+    }
+
+    /// Spawn the tasks in `ready`. An aggregate has nothing to run, so it
+    /// completes on the spot and releases its own dependents.
+    fn start<F, Fut>(
+        graph: &TaskGraph,
+        mut ready: Vec<String>,
+        spawn_one: &F,
+        in_degree: &mut HashMap<String, usize>,
+        dependents: &HashMap<String, Vec<String>>,
+        running: &mut JoinSet<Result<Option<TaskResult>>>,
+    ) where
+        F: Fn(&str) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<TaskResult>>> + Send + 'static,
+    {
+        ready.reverse();
+        while let Some(name) = ready.pop() {
+            if graph.get_task(&name).is_some_and(is_aggregate) {
+                let mut next = Self::release(&name, in_degree, dependents);
+                next.reverse();
+                ready.extend(next);
+            } else {
+                running.spawn(spawn_one(&name));
+            }
+        }
+    }
+
+    /// Dependents whose final outstanding dependency was `finished`.
+    fn release(
+        finished: &str,
+        in_degree: &mut HashMap<String, usize>,
+        dependents: &HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        let mut ready = Vec::new();
+        for d in dependents.get(finished).into_iter().flatten() {
+            if let Some(remaining) = in_degree.get_mut(d) {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    ready.push(d.clone());
+                }
+            }
+        }
+        ready
     }
 
     /// Run one task with its spinner and output prefix.
@@ -1076,18 +1128,55 @@ impl Executor {
             );
 
             for task in group {
-                if !task.config.run.is_empty() {
-                    for cmd in &task.config.run {
-                        outln!("    {} {}", style("→").dim(), cmd);
-                    }
-                } else if task.config.script.is_some() {
-                    outln!(
-                        "    {} {}",
-                        style("→").dim(),
-                        style("[rhai script]").italic()
-                    );
-                }
+                Self::print_planned_task(task);
             }
+        }
+    }
+
+    /// One task's entry in the dry-run plan: what runs, where, with what env.
+    fn print_planned_task(task: &TaskNode) {
+        let config = &task.config;
+        if is_aggregate(task) {
+            outln!(
+                "  {} {}",
+                style(&task.name).bold(),
+                style("(depends only)").dim()
+            );
+            return;
+        }
+        outln!("  {}", style(&task.name).bold());
+        if let Some(cwd) = &config.cwd {
+            outln!("    {} {}", style("cwd:").dim(), cwd.display());
+        }
+        if !config.env.is_empty() {
+            let mut env: Vec<_> = config.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            env.sort_unstable();
+            outln!("    {} {}", style("env:").dim(), env.join(" "));
+        }
+        for cmd in &config.run {
+            let mut lines = cmd.lines();
+            outln!(
+                "    {} {}",
+                style("→").dim(),
+                lines.next().unwrap_or_default()
+            );
+            for line in lines {
+                outln!("      {line}");
+            }
+        }
+        if config.script.is_some() {
+            outln!(
+                "    {} {}",
+                style("→").dim(),
+                style("[rhai script]").italic()
+            );
+        }
+        if let Some(wasm) = &config.wasm {
+            outln!(
+                "    {} {}",
+                style("→").dim(),
+                style(format!("[wasm {}]", wasm.display())).italic()
+            );
         }
     }
 
@@ -1121,10 +1210,9 @@ impl Executor {
 
     /// Print execution summary
     #[allow(clippy::unused_self)]
-    fn print_summary(&self, results: &[TaskResult], planned: usize) {
+    fn print_summary(&self, results: &[TaskResult], planned: usize, wall: Duration) {
         outln!();
 
-        let total: Duration = results.iter().map(|r| r.duration).sum();
         let succeeded = results.iter().filter(|r| r.success).count();
         let cancelled = results.iter().filter(|r| r.cancelled).count();
         let failed = results.len() - succeeded - cancelled;
@@ -1133,11 +1221,10 @@ impl Executor {
 
         if failed + cancelled + not_run == 0 {
             outln!(
-                "{} {} tasks completed in {:.2}s ({} cached)",
+                "{} {succeeded} {} completed in {:.2}s ({cached} cached)",
                 style("✓").green().bold(),
-                succeeded,
-                total.as_secs_f64(),
-                cached
+                if succeeded == 1 { "task" } else { "tasks" },
+                wall.as_secs_f64(),
             );
         } else {
             let mut parts = vec![format!("{succeeded} succeeded"), format!("{failed} failed")];
@@ -1151,10 +1238,15 @@ impl Executor {
                 "{} {} in {:.2}s",
                 style("✗").red().bold(),
                 parts.join(", "),
-                total.as_secs_f64()
+                wall.as_secs_f64()
             );
         }
     }
+}
+
+/// A task with nothing to run of its own, only dependencies.
+const fn is_aggregate(task: &TaskNode) -> bool {
+    task.config.run.is_empty() && task.config.script.is_none() && task.config.wasm.is_none()
 }
 
 /// A process's exit code, with death by signal N reported as 128 + N like a shell.

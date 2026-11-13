@@ -20,6 +20,10 @@ depends = ["fmt", "lint", "test"]   # run these first
 Dependencies form a DAG; yatr runs each task as soon as its dependencies finish
 (a [ready-queue scheduler](./benchmarks.md)), bounded by `--parallel`.
 
+A task with only `depends` and no `run`, `script` or `wasm` is an aggregate. It
+has nothing to run, so it is never cached, gets no status line and is not counted
+in the summary.
+
 ## Parallel commands
 
 ```toml

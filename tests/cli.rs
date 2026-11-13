@@ -524,3 +524,124 @@ fn timeout_is_enforced() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("timed out after 1s"), "{stderr}");
 }
+
+/// `[settings] shell` is the shell `shell = true` commands run under.
+#[cfg(unix)]
+#[test]
+fn settings_shell_is_used() {
+    let dir = tempfile::tempdir().unwrap();
+    let shell = dir.path().join("fake-shell");
+    std::fs::write(&shell, "#!/bin/sh\necho \"fake-shell ran: $2\"\n").unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        format!(
+            "[settings]\nshell = \"{}\"\n[tasks.which]\nshell = true\nno_cache = true\nrun = [\"echo hi\"]\n",
+            shell.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("which")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("fake-shell ran: echo hi"), "{stdout}");
+}
+
+/// `[settings] parallelism` bounds concurrency when `--parallel` is not given.
+#[cfg(unix)]
+#[test]
+fn settings_parallelism_is_used() {
+    let start = std::time::Instant::now();
+    let (_dir, out) = run_in(
+        "[settings]\nparallelism = 1\n\
+         [tasks.a]\nno_cache = true\nrun = [\"sleep 1\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"sleep 1\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\n",
+        &["all"],
+    );
+    assert!(out.status.success());
+    assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+}
+
+/// The summary reports wall time, counts real tasks only, and says "1 task".
+#[cfg(unix)]
+#[test]
+fn summary_reports_wall_time_and_skips_aggregates() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "x").unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.a]\nno_cache = true\nrun = [\"sleep 1\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"sleep 1\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n\
+         [tasks.one]\nsources = [\"in.txt\"]\nrun = [\"true\"]\n\
+         [tasks.agg]\ndepends = [\"one\"]\nrun = []\n",
+    )
+    .unwrap();
+    let run = |task: &str| {
+        let out = Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(dir.path())
+            .arg(task)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let stdout = run("all");
+    let secs: f64 = stdout
+        .split("completed in ")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no summary: {stdout}"));
+    assert!(secs < 1.8, "summary summed task time: {stdout}");
+    assert!(stdout.contains("2 tasks completed"), "{stdout}");
+    assert!(!stdout.contains("all"), "aggregate reported: {stdout}");
+
+    let stdout = run("agg");
+    assert!(stdout.contains("1 task completed"), "{stdout}");
+    assert!(!stdout.contains("cached agg"), "{stdout}");
+}
+
+/// `yatr graph` prints the same thing every time, deps in declaration order.
+#[test]
+fn graph_output_is_deterministic() {
+    let toml = "[tasks.a]\nrun = [\"echo a\"]\n[tasks.b]\nrun = [\"echo b\"]\n\
+                [tasks.c]\nrun = [\"echo c\"]\n[tasks.d]\nrun = [\"echo d\"]\n\
+                [tasks.e]\nrun = [\"echo e\"]\n\
+                [tasks.top]\ndepends = [\"c\", \"a\", \"e\", \"b\", \"d\"]\nrun = [\"echo top\"]\n";
+    let (_dir, first) = run_in(toml, &["graph"]);
+    let first = String::from_utf8_lossy(&first.stdout).into_owned();
+    assert!(first.contains("top ← c, a, e, b, d"), "{first}");
+    for _ in 0..5 {
+        let (_dir, again) = run_in(toml, &["graph"]);
+        assert_eq!(first, String::from_utf8_lossy(&again.stdout));
+    }
+}
+
+/// The dry-run plan names each task and shows its cwd and env.
+#[test]
+fn dry_run_plan_names_tasks_with_cwd_and_env() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\ncwd = \"sub\"\nenv = { MODE = \"fast\" }\nrun = [\"line one\\nline two\"]\n",
+        &["run", "--dry-run", "gen"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("  gen"), "{stdout}");
+    assert!(stdout.contains("cwd: sub"), "{stdout}");
+    assert!(stdout.contains("MODE=fast"), "{stdout}");
+    let one = stdout.lines().find(|l| l.contains("line one")).unwrap();
+    let two = stdout.lines().find(|l| l.contains("line two")).unwrap();
+    assert!(
+        two.starts_with("      "),
+        "continuation unindented: {stdout}"
+    );
+    let column = |l: &str, word: &str| l.chars().count() - word.len();
+    assert_eq!(column(one, "line one"), column(two, "line two"), "{stdout}");
+}
