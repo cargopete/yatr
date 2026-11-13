@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `yatr check` warns about tasks named after a builtin subcommand (including `help`), which the bare form cannot reach, and names `yatr run <name>` (#4).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

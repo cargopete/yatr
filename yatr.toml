@@ -26,7 +26,7 @@ run = ["cargo test"]
 sources = ["src/**/*.rs", "Cargo.toml"]
 watch = ["src/**/*.rs", "tests/**/*.rs"]
 
-[tasks.check]
+[tasks.ci]
 desc = "Full CI check (fmt, lint, test)"
 depends = ["fmt", "lint", "test"]
 run = []
@@ -42,7 +42,7 @@ sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 
 [tasks.release]
 desc = "Build optimized release binary"
-depends = ["check"]
+depends = ["ci"]
 run = ["cargo build --release"]
 sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/release/yatr"]
@@ -138,12 +138,12 @@ script = '''
 
 [tasks.publish-dry]
 desc = "Dry-run publish to crates.io"
-depends = ["check"]
+depends = ["ci"]
 run = ["cargo publish --dry-run"]
 
 [tasks.publish]
 desc = "Publish to crates.io"
-depends = ["check"]
+depends = ["ci"]
 no_cache = true
 run = ["cargo publish"]
 

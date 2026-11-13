@@ -9,6 +9,11 @@ desc = "Format and lint"
 run = ["cargo fmt", "cargo clippy --fix --allow-dirty"]
 ```
 
+Subcommand names (`run`, `list`, `watch`, `graph`, `cache`, `init`, `check`,
+`schema`, `lsp`, `affected`, `help`) win over a task of the same name in the bare
+form: `yatr check` validates the config, and only `yatr run check` reaches the
+task. `yatr check` warns about any task named like this.
+
 ## Dependencies
 
 ```toml

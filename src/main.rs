@@ -187,10 +187,17 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
+    let builtins = cli::builtin_names();
     for name in graph.task_names() {
         let Some(task) = config.get_task(name) else {
             continue;
         };
+        if builtins.iter().any(|b| b == name) {
+            warnings.push(format!(
+                "task '{name}': `yatr {name}` runs the builtin subcommand, not this task; \
+                 use `yatr run {name}` or rename it"
+            ));
+        }
         let base = task.cwd.clone().unwrap_or_else(|| ".".into());
 
         // Referenced paths must exist.

@@ -515,7 +515,7 @@ almost no two projects share a toolchain.
 
 ```toml
 # The aggregate task is named `ci`, not `check`. `yatr check` is a builtin that
-# validates the config file, and it shadows a task of that name without warning.
+# validates the config file, and the bare form reaches the builtin, not the task.
 [tasks.ci]
 desc = "What CI runs"
 depends = ["fmt-check", "lint", "test"]
@@ -523,7 +523,8 @@ run = []
 ```
 
 Reserved names to route around when naming tasks: `run`, `list`, `watch`, `graph`, `cache`,
-`init`, `check`, `schema`, `lsp`, `affected`, `help`.
+`init`, `check`, `schema`, `lsp`, `affected`, `help`. A task with one of these names only runs
+as `yatr run <name>`, and `yatr check` warns about it.
 
 For repos with a generated artifact committed alongside its source, a drift task is the single
 highest-value thing yatr can run, and it needs no CI infrastructure at all:
