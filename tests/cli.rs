@@ -1115,3 +1115,26 @@ fn verbose_prints_commands() {
     assert!(lines.contains(&"$ echo hello"), "{stderr}");
     assert!(lines.contains(&"$ echo again"), "{stderr}");
 }
+
+/// With `--keep-going` the closing error names every failed task, and several
+/// failures exit 1 rather than with whichever code came first.
+#[cfg(unix)]
+#[test]
+fn keep_going_reports_every_failure() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nno_cache = true\nrun = [\"sh -c 'exit 3'\"]\n\
+         [tasks.b]\nshell = true\nno_cache = true\nrun = [\"sleep 0.2; exit 5\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n",
+        &["all", "-k"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("2 tasks failed: a (exit code 3), b (exit code 5)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Command failed with exit code 3: sh -c 'exit 3'"),
+        "{stderr}"
+    );
+}

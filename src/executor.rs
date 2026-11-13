@@ -516,7 +516,7 @@ impl Executor {
         let first = all_results.len();
         let (mut signals, _active) = signals::subscribe();
         let mut interrupted = None;
-        let mut failure = None;
+        let mut failures = Vec::new();
         loop {
             let joined = tokio::select! {
                 joined = running.join_next() => match joined {
@@ -545,12 +545,8 @@ impl Executor {
             if !self.exec_config.json && (failed || !self.exec_config.quiet) {
                 Self::print_task_result(&result);
             }
-            if failed && failure.is_none() {
-                failure = Some(YatrError::TaskFailed {
-                    task: finished.clone(),
-                    code: result.exit_code.unwrap_or(1),
-                    stderr: None,
-                });
+            if failed {
+                failures.push((finished.clone(), result.exit_code.unwrap_or(1)));
             }
             let ran = !result.cancelled && !failed;
             all_results.push(result);
@@ -579,10 +575,17 @@ impl Executor {
                 .count();
             self.print_summary(&all_results[first..], planned, started.elapsed());
         }
-        match (interrupted, failure) {
-            (Some(signal), _) => Err(YatrError::Interrupted { signal }),
-            (None, Some(failure)) => Err(failure),
-            (None, None) => Ok(()),
+        if let Some(signal) = interrupted {
+            return Err(YatrError::Interrupted { signal });
+        }
+        match <[_; 1]>::try_from(failures) {
+            Ok([(task, code)]) => Err(YatrError::TaskFailed {
+                task,
+                code,
+                stderr: None,
+            }),
+            Err(failures) if failures.is_empty() => Ok(()),
+            Err(tasks) => Err(YatrError::TasksFailed { tasks }),
         }
     }
 

@@ -13,6 +13,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `-q` now suppresses status lines, the spinner and the summary while keeping task output and failures, and `-v` prints each command before it runs; the two conflict. Both were accepted and ignored before (#43).
+- With `--keep-going`, the closing error lists every failed task with its exit code; when more than one failed yatr exits 1, and a single failure still exits with its own code. The per-command message no longer nests quotes (`Command failed with exit code 3: sh -c 'exit 3'`) (#42).
 - Task output lines starting with `::` are printed without the task-name prefix, so GitHub Actions workflow commands and log groups work again (#49).
 
 ## [1.2.0] - 2026-11-13

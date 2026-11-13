@@ -101,8 +101,12 @@ Each `run` command gets its own process group. When a task fails, yatr stops the
 tasks still running: their whole process group gets SIGTERM, then SIGKILL after
 three seconds, and they are reported as cancelled. Tasks that had not started are
 not started. With `--keep-going`, tasks that do not depend on the failed one run
-to completion instead; its dependents are still skipped. yatr exits with the
-failing command's exit code.
+to completion instead; its dependents are still skipped.
+
+When one task fails, yatr exits with its failing command's exit code. When
+`--keep-going` lets several fail, the closing error lists each of them with its
+code, in the order they failed, and yatr exits 1: no one task's code stands for
+the others. A task with `allow_failure` is not counted.
 
 SIGINT and SIGTERM sent to yatr are forwarded the same way, and yatr then exits
 with 128 plus the signal number. A `foreground` task stays in yatr's process
