@@ -51,7 +51,9 @@ pub fn detect(
         .to_string();
     let changed = changed_files(&merge_base)?;
     let redefined = redefined_tasks(config, config_path, &merge_base);
-    let tasks = affected_tasks(graph, &changed, &redefined);
+    let root = std::env::current_dir()?;
+    let root = root.canonicalize().unwrap_or(root);
+    let tasks = affected_tasks(graph, &changed, &root, &redefined);
     Ok(Affected {
         merge_base,
         changed,
@@ -152,41 +154,36 @@ fn behaviour(task: &TaskConfig) -> Option<serde_json::Value> {
     serde_json::to_value(task).ok()
 }
 
-/// A task's `cwd` as a relative path with `.` components removed, or `None`
-/// if it points outside the current directory (where git paths cannot reach).
-fn relative_cwd(task: &TaskConfig) -> Option<PathBuf> {
-    let Some(cwd) = &task.cwd else {
-        return Some(PathBuf::new());
-    };
-    let cwd = if cwd.is_absolute() {
-        let here = std::env::current_dir().ok()?;
-        let here = here.canonicalize().unwrap_or(here);
-        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-        cwd.strip_prefix(here).ok()?.to_path_buf()
-    } else {
-        cwd.clone()
-    };
-    let mut out = PathBuf::new();
-    for c in cwd.components() {
+/// Where a task's patterns resolve: its `cwd` under `root`, lexically
+/// normalised, or `None` if that leaves `root` (git paths cannot reach it).
+fn task_dir(task: &TaskConfig, root: &Path) -> Option<PathBuf> {
+    let joined = task
+        .cwd
+        .as_ref()
+        .map_or_else(|| root.to_path_buf(), |c| root.join(c));
+    let mut dir = PathBuf::new();
+    for c in joined.components() {
         match c {
             Component::CurDir => {}
-            Component::Normal(p) => out.push(p),
-            _ => return None,
+            Component::ParentDir => {
+                dir.pop();
+            }
+            other => dir.push(other),
         }
     }
-    Some(out)
+    dir.starts_with(root).then_some(dir)
 }
 
 const fn has_commands(task: &TaskConfig) -> bool {
     !task.run.is_empty() || task.script.is_some() || task.wasm.is_some()
 }
 
-fn matches_inputs(task: &TaskConfig, changed: &[String]) -> bool {
+fn matches_inputs(task: &TaskConfig, changed: &[String], root: &Path) -> bool {
     let patterns: Vec<&String> = task.sources.iter().chain(task.watch.iter()).collect();
     if patterns.is_empty() {
         return has_commands(task);
     }
-    let Some(cwd) = relative_cwd(task) else {
+    let Some(dir) = task_dir(task, root) else {
         return true;
     };
 
@@ -201,16 +198,17 @@ fn matches_inputs(task: &TaskConfig, changed: &[String]) -> bool {
     };
     changed
         .iter()
-        .filter_map(|f| Path::new(f).strip_prefix(&cwd).ok())
+        .filter_map(|f| root.join(f).strip_prefix(&dir).ok().map(Path::to_path_buf))
         .any(|rel| set.is_match(rel))
 }
 
-/// Compute the set of task names affected by the given changed files, with
-/// `redefined` tasks counted as directly affected.
+/// Compute the set of task names affected by the given changed files, which
+/// are relative to `root`, with `redefined` tasks counted as directly affected.
 #[must_use]
 pub fn affected_tasks<S: BuildHasher>(
     graph: &TaskGraph,
     changed: &[String],
+    root: &Path,
     redefined: &HashSet<String, S>,
 ) -> HashSet<String> {
     let mut affected: HashSet<String> = graph
@@ -219,7 +217,7 @@ pub fn affected_tasks<S: BuildHasher>(
             redefined.contains(*name)
                 || graph
                     .get_task(name)
-                    .is_some_and(|t| matches_inputs(&t.config, changed))
+                    .is_some_and(|t| matches_inputs(&t.config, changed, root))
         })
         .map(ToString::to_string)
         .collect();
@@ -242,6 +240,8 @@ pub fn affected_tasks<S: BuildHasher>(
 mod tests {
     use super::*;
 
+    const ROOT: &str = "/repo";
+
     fn graph(toml: &str) -> TaskGraph {
         let config: crate::config::Config = toml::from_str(toml).unwrap();
         TaskGraph::from_config(&config).unwrap()
@@ -253,7 +253,12 @@ mod tests {
             "[tasks.frontend]\nsources=[\"web/**\"]\nrun=[\"echo fe\"]\n\
              [tasks.backend]\nsources=[\"api/**\"]\nrun=[\"echo be\"]\n",
         );
-        let aff = affected_tasks(&g, &["web/index.html".to_string()], &HashSet::new());
+        let aff = affected_tasks(
+            &g,
+            &["web/index.html".to_string()],
+            Path::new(ROOT),
+            &HashSet::new(),
+        );
         assert!(aff.contains("frontend"));
         assert!(!aff.contains("backend"));
     }
@@ -265,7 +270,12 @@ mod tests {
              [tasks.app]\ndepends=[\"lib\"]\nsources=[\"app/**\"]\nrun=[\"echo app\"]\n",
         );
         // A change in lib affects app, which depends on it.
-        let aff = affected_tasks(&g, &["lib/core.rs".to_string()], &HashSet::new());
+        let aff = affected_tasks(
+            &g,
+            &["lib/core.rs".to_string()],
+            Path::new(ROOT),
+            &HashSet::new(),
+        );
         assert!(aff.contains("lib"));
         assert!(aff.contains("app"));
     }
@@ -276,7 +286,12 @@ mod tests {
             "[tasks.always]\nrun=[\"echo hi\"]\n\
              [tasks.scoped]\nsources=[\"src/**\"]\nrun=[\"echo scoped\"]\n",
         );
-        let aff = affected_tasks(&g, &["docs/readme.md".to_string()], &HashSet::new());
+        let aff = affected_tasks(
+            &g,
+            &["docs/readme.md".to_string()],
+            Path::new(ROOT),
+            &HashSet::new(),
+        );
         assert!(aff.contains("always")); // no declared inputs → always affected
         assert!(!aff.contains("scoped")); // sources don't match
     }
@@ -284,15 +299,28 @@ mod tests {
     #[test]
     fn sources_resolve_against_task_cwd() {
         let g = graph("[tasks.site]\ncwd=\"web\"\nsources=[\"src/**\"]\nrun=[\"echo\"]\n");
-        let changed = |f: &str| affected_tasks(&g, &[f.to_string()], &HashSet::new());
+        let changed =
+            |f: &str| affected_tasks(&g, &[f.to_string()], Path::new(ROOT), &HashSet::new());
         assert!(changed("web/src/a.ts").contains("site"));
         assert!(!changed("src/a.ts").contains("site"));
     }
 
     #[test]
+    fn cwd_outside_the_root_is_always_affected() {
+        let g = graph("[tasks.t]\ncwd=\"../elsewhere\"\nsources=[\"src/**\"]\nrun=[\"echo\"]\n");
+        let aff = affected_tasks(&g, &[], Path::new(ROOT), &HashSet::new());
+        assert!(aff.contains("t"));
+    }
+
+    #[test]
     fn star_does_not_cross_directories() {
         let g = graph("[tasks.t]\nsources=[\"src/*.rs\"]\nrun=[\"echo\"]\n");
-        let aff = affected_tasks(&g, &["src/nested/a.rs".to_string()], &HashSet::new());
+        let aff = affected_tasks(
+            &g,
+            &["src/nested/a.rs".to_string()],
+            Path::new(ROOT),
+            &HashSet::new(),
+        );
         assert!(!aff.contains("t"));
     }
 
@@ -303,9 +331,14 @@ mod tests {
              [tasks.b]\nsources=[\"b/**\"]\nrun=[\"echo b\"]\n\
              [tasks.ci]\ndepends=[\"a\",\"b\"]\nrun=[]\n",
         );
-        let none = affected_tasks(&g, &["docs/x.md".to_string()], &HashSet::new());
+        let none = affected_tasks(
+            &g,
+            &["docs/x.md".to_string()],
+            Path::new(ROOT),
+            &HashSet::new(),
+        );
         assert!(none.is_empty(), "{none:?}");
-        let some = affected_tasks(&g, &["a/x".to_string()], &HashSet::new());
+        let some = affected_tasks(&g, &["a/x".to_string()], Path::new(ROOT), &HashSet::new());
         assert!(some.contains("ci") && !some.contains("b"));
     }
 
@@ -316,7 +349,7 @@ mod tests {
              [tasks.app]\ndepends=[\"lib\"]\nsources=[\"app/**\"]\nrun=[\"echo app\"]\n",
         );
         let redefined: HashSet<String> = ["lib".to_string()].into();
-        let aff = affected_tasks(&g, &[], &redefined);
+        let aff = affected_tasks(&g, &[], Path::new(ROOT), &redefined);
         assert!(aff.contains("lib") && aff.contains("app"));
     }
 
