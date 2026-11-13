@@ -48,6 +48,9 @@ pub struct OutputEntry {
     pub symlink: bool,
 }
 
+/// Names the directory an action-cache scope belongs to.
+const SCOPE_MARKER: &str = ".dir";
+
 /// The result of executing a task, stored in the action cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionResult {
@@ -283,7 +286,7 @@ impl Cache {
         }
 
         // Persist the action result locally for next time.
-        Self::write_atomic(&self.ac_path(key, cwd), &ac_bytes).ok()?;
+        self.write_ac(key, cwd, &ac_bytes).ok()?;
         Some(result)
     }
 
@@ -322,7 +325,7 @@ impl Cache {
         };
         let bytes = serde_json::to_vec_pretty(&signed).map_err(|e| Self::ser_err(&e))?;
 
-        Self::write_atomic(&self.ac_path(&key, cwd), &bytes)?;
+        self.write_ac(&key, cwd, &bytes)?;
 
         // Write-through to the remote (non-fatal).
         self.upload_to_remote(&key, &signed.result, bytes, cwd)
@@ -523,38 +526,68 @@ impl Cache {
         Ok(())
     }
 
-    /// Clear all action-cache entries for a named task, regardless of inputs.
+    /// Remove action-cache entries, optionally only those for tasks under
+    /// `root` and only those for one named task, regardless of inputs.
     ///
     /// Returns the number of entries removed. Orphaned CAS blobs are left in
     /// place (cheap, content-addressed, and reused by other entries); a full
-    /// `clear` reclaims them.
-    pub fn clear_task(&self, task_name: &str) -> Result<usize> {
+    /// `clear` reclaims them. Entries from before entries were scoped by
+    /// directory belong to no project, so only an unscoped clear removes them.
+    pub fn clear_entries(&self, root: Option<&Path>, task_name: Option<&str>) -> Result<usize> {
         if !self.enabled {
             return Ok(0);
         }
-
-        let ac_dir = self.dir.join("ac");
-        if !ac_dir.exists() {
-            return Ok(0);
-        }
+        let root = root.map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf()));
 
         let mut removed = 0;
-        for entry in std::fs::read_dir(&ac_dir)? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if let Ok(signed) = serde_json::from_str::<SignedAc>(&content) {
-                if signed.result.task == task_name {
-                    std::fs::remove_file(&path)?;
-                    removed += 1;
+        for (scope, path) in self.ac_entries()? {
+            if let Some(root) = &root {
+                if !scope.as_ref().is_some_and(|dir| dir.starts_with(root)) {
+                    continue;
                 }
             }
+            if let Some(task_name) = task_name {
+                let Ok(content) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let is_task = serde_json::from_str::<SignedAc>(&content)
+                    .is_ok_and(|signed| signed.result.task == task_name);
+                if !is_task {
+                    continue;
+                }
+            }
+            std::fs::remove_file(&path)?;
+            removed += 1;
         }
         Ok(removed)
+    }
+
+    /// Every action-cache entry, with the directory it is scoped to (`None`
+    /// for an entry written before entries were scoped).
+    fn ac_entries(&self) -> Result<Vec<(Option<PathBuf>, PathBuf)>> {
+        let ac_dir = self.dir.join("ac");
+        let mut entries = Vec::new();
+        if !ac_dir.exists() {
+            return Ok(entries);
+        }
+        let is_entry = |p: &Path| p.extension().is_some_and(|e| e == "json");
+        for entry in std::fs::read_dir(&ac_dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                let scope = std::fs::read_to_string(path.join(SCOPE_MARKER))
+                    .ok()
+                    .map(|s| PathBuf::from(s.trim_end_matches('\n')));
+                for inner in std::fs::read_dir(&path)? {
+                    let inner = inner?.path();
+                    if is_entry(&inner) {
+                        entries.push((scope.clone(), inner));
+                    }
+                }
+            } else if is_entry(&path) {
+                entries.push((None, path));
+            }
+        }
+        Ok(entries)
     }
 
     /// Get cache statistics
@@ -566,15 +599,9 @@ impl Cache {
         let mut total_size = 0u64;
         let mut entry_count = 0usize;
 
-        let ac_dir = self.dir.join("ac");
-        if ac_dir.exists() {
-            for entry in std::fs::read_dir(&ac_dir)? {
-                let entry = entry?;
-                if entry.path().extension().is_some_and(|e| e == "json") {
-                    total_size += entry.metadata()?.len();
-                    entry_count += 1;
-                }
-            }
+        for (_, path) in self.ac_entries()? {
+            total_size += std::fs::metadata(&path)?.len();
+            entry_count += 1;
         }
 
         let cas_dir = self.dir.join("cas");
@@ -631,17 +658,11 @@ impl Cache {
         }
         hasher.update(&[u8::from(config.shell.unwrap_or(false))]);
 
-        // The environment the task runs with: global `[env]` merged with its
-        // own. Pinned toolchains put their bin dirs ahead of the ambient PATH,
-        // so that PATH is left out and the pins themselves stand in for it.
-        let env = project.task_env(config);
-        let injected_path = (!project.toolchain.is_empty())
-            .then(|| project.env.get("PATH"))
-            .flatten();
-        let mut env_pairs: Vec<_> = env
-            .iter()
-            .filter(|(k, v)| !(k.as_str() == "PATH" && Some(*v) == injected_path))
-            .collect();
+        // The environment the config declares: global `[env]` merged with the
+        // task's own. Toolchain bin dirs are machine paths, so the pins below
+        // stand in for them.
+        let env = project.declared_env(config);
+        let mut env_pairs: Vec<_> = env.iter().collect();
         env_pairs.sort_by_key(|(k, _)| *k);
         for (k, v) in env_pairs {
             Self::update_field(&mut hasher, k.as_bytes());
@@ -1044,15 +1065,31 @@ impl Cache {
     }
 
     /// Path for a local action-cache entry. The cache directory is shared by
-    /// every project on the machine, so the entry is scoped to the task's
-    /// directory; only the remote key is shared across checkouts.
+    /// every project on the machine, so entries live under a directory per
+    /// task directory; only the remote key is shared across checkouts.
     fn ac_path(&self, key: &str, cwd: &Path) -> PathBuf {
+        let local = &blake3::hash(key.as_bytes()).to_hex()[..32];
+        self.ac_scope(cwd).1.join(format!("{local}.json"))
+    }
+
+    /// The canonical task directory and the action-cache directory scoped to it.
+    fn ac_scope(&self, cwd: &Path) -> (PathBuf, PathBuf) {
         let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-        let mut hasher = Hasher::new();
-        hasher.update(key.as_bytes());
-        hasher.update(dir.as_os_str().as_encoded_bytes());
-        let local = &hasher.finalize().to_hex()[..16];
-        self.dir.join("ac").join(format!("{local}.json"))
+        let scope = &blake3::hash(dir.as_os_str().as_encoded_bytes()).to_hex()[..16];
+        let scope_dir = self.dir.join("ac").join(scope);
+        (dir, scope_dir)
+    }
+
+    /// Write an action-cache entry, recording which directory its scope
+    /// belongs to so `yatr cache clear` can find a project's entries.
+    fn write_ac(&self, key: &str, cwd: &Path, bytes: &[u8]) -> Result<()> {
+        let (dir, scope_dir) = self.ac_scope(cwd);
+        let marker = scope_dir.join(SCOPE_MARKER);
+        if !marker.exists() {
+            std::fs::create_dir_all(&scope_dir)?;
+            Self::write_atomic(&marker, dir.to_string_lossy().as_bytes())?;
+        }
+        Self::write_atomic(&self.ac_path(key, cwd), bytes)
     }
 
     /// Path for a CAS blob.
@@ -1323,23 +1360,26 @@ mod tests {
         assert_eq!(before, after, "a change inside .git must not move the key");
     }
 
-    /// A toolchain pin is a key input; the PATH yatr derives from it (which
-    /// also carries the ambient PATH) is not.
+    /// A toolchain pin and a declared `PATH` are key inputs; the bin dirs the
+    /// pins install to are machine paths, and are not.
     #[test]
     fn test_toolchain_pin_is_a_key_input() {
         let work = tempfile::tempdir().unwrap();
         let task = task_with(&[], &[]);
-        let project = |version: &str, path: &str| -> Config {
-            toml::from_str(&format!(
+        let project = |version: &str, path: &str, bins: &str| -> Config {
+            let mut c: Config = toml::from_str(&format!(
                 "[env]\nPATH = \"{path}\"\n[toolchain.node]\nversion = \"{version}\"\nurl = \"https://example.com/{{version}}.tgz\"\n"
             ))
-            .unwrap()
+            .unwrap();
+            c.toolchain_bins = vec![PathBuf::from(bins)];
+            c
         };
         let key = |p: &Config| Cache::compute_key("t", &task, p, &[], work.path()).unwrap();
 
-        let base = key(&project("26.11.1", "/tc/bin:/usr/bin"));
-        assert_ne!(base, key(&project("24.11.1", "/tc/bin:/usr/bin")));
-        assert_eq!(base, key(&project("26.11.1", "/tc/bin:/opt/homebrew/bin")));
+        let base = key(&project("26.11.1", "/usr/bin", "/home/a/tc/bin"));
+        assert_ne!(base, key(&project("24.11.1", "/usr/bin", "/home/a/tc/bin")));
+        assert_ne!(base, key(&project("26.11.1", "/opt/bin", "/home/a/tc/bin")));
+        assert_eq!(base, key(&project("26.11.1", "/usr/bin", "/home/b/tc/bin")));
     }
 
     #[test]
@@ -1404,7 +1444,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(cache.clear_task("a").unwrap(), 1);
+        assert_eq!(cache.clear_entries(None, Some("a")).unwrap(), 1);
         assert_eq!(
             cache
                 .get("a", &key_of("a", &config, work.path()), work.path())

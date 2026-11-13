@@ -353,18 +353,8 @@ async fn apply_toolchains(config: &mut Config) -> Result<()> {
     if config.toolchain.is_empty() {
         return Ok(());
     }
-    let bins = toolchain::ensure_all(&config.toolchain, &toolchain::toolchains_dir()).await?;
-    if !bins.is_empty() {
-        let mut paths = bins;
-        if let Some(existing) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&existing));
-        }
-        if let Ok(joined) = std::env::join_paths(&paths) {
-            config
-                .env
-                .insert("PATH".to_string(), joined.to_string_lossy().into_owned());
-        }
-    }
+    config.toolchain_bins =
+        toolchain::ensure_all(&config.toolchain, &toolchain::toolchains_dir()).await?;
     Ok(())
 }
 
@@ -548,9 +538,11 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 
 async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
     // Cache commands work without a config, so a missing one means the default dir.
-    let cache_dir = Config::load(cli.config.as_deref())
-        .ok()
-        .and_then(|(c, _)| c.settings.cache_dir);
+    let loaded = Config::load(cli.config.as_deref()).ok();
+    let project_root = loaded
+        .as_ref()
+        .and_then(|(_, path)| path.parent().map(std::path::Path::to_path_buf));
+    let cache_dir = loaded.and_then(|(c, _)| c.settings.cache_dir);
 
     let cache = cache::Cache::new(cache_dir)?;
 
@@ -560,18 +552,32 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
             outln!("Cache: {stats}");
         }
 
-        CacheCommands::Clear { task } => {
-            if let Some(task) = task {
-                let removed = cache.clear_task(task)?;
-                outln!(
-                    "{} Cleared {removed} cache {} for task '{task}'",
-                    style("✓").green(),
-                    if removed == 1 { "entry" } else { "entries" },
-                );
-            } else {
+        CacheCommands::Clear { task, all } => {
+            if *all && task.is_none() {
                 cache.clear().await?;
-                outln!("{} Cache cleared", style("✓").green());
+                outln!("{} Cache cleared for every project", style("✓").green());
+                return Ok(());
             }
+            let root = if *all {
+                None
+            } else {
+                Some(project_root.ok_or_else(|| {
+                    YatrError::InvalidConfig {
+                        message: "no yatr.toml here, so there is no project to clear; \
+                              pass --all to clear the cache for every project"
+                            .to_string(),
+                    }
+                })?)
+            };
+            let removed = cache.clear_entries(root.as_deref(), task.as_deref())?;
+            let what = task
+                .as_ref()
+                .map_or_else(String::new, |t| format!(" for task '{t}'"));
+            outln!(
+                "{} Cleared {removed} cache {}{what}",
+                style("✓").green(),
+                if removed == 1 { "entry" } else { "entries" },
+            );
         }
 
         CacheCommands::Path => {

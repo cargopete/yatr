@@ -38,6 +38,11 @@ pub struct Config {
     /// Global settings
     #[serde(default)]
     pub settings: Settings,
+
+    /// Bin dirs of the installed toolchains, put ahead of each task's `PATH`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub toolchain_bins: Vec<PathBuf>,
 }
 
 /// A pinned, auto-downloaded language toolchain.
@@ -436,6 +441,26 @@ impl Config {
     /// see the process environment; task values also see the global ones.
     #[must_use]
     pub fn task_env(&self, task: &TaskConfig) -> HashMap<String, String> {
+        let mut env = self.declared_env(task);
+        if !self.toolchain_bins.is_empty() {
+            let rest = env
+                .get("PATH")
+                .cloned()
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let mut paths = self.toolchain_bins.clone();
+            paths.extend(std::env::split_paths(&rest));
+            if let Ok(joined) = std::env::join_paths(&paths) {
+                env.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+            }
+        }
+        env
+    }
+
+    /// The environment the config declares for `task`: global `[env]` merged
+    /// with the task's own, expanded, without the toolchain bin dirs.
+    #[must_use]
+    pub fn declared_env(&self, task: &TaskConfig) -> HashMap<String, String> {
         let process = |name: &str| std::env::var(name).ok();
         let mut env: HashMap<String, String> = self
             .env
@@ -644,6 +669,24 @@ mod tests {
         .unwrap();
 
         assert!(Config::load(Some(&dir.path().join("a.toml"))).is_err());
+    }
+
+    /// Regression (#39): toolchain bins go ahead of a declared `PATH` rather
+    /// than replacing it, and stay out of the declared env the key hashes.
+    #[test]
+    fn toolchain_bins_are_prepended_to_a_declared_path() {
+        let mut config: Config =
+            toml::from_str("[env]\nPATH = \"/declared/bin\"\n[tasks.t]\nrun = [\"true\"]\n")
+                .unwrap();
+        config.toolchain_bins = vec![PathBuf::from("/tc/bin")];
+        let task = &config.tasks["t"];
+        let path = config.task_env(task)["PATH"].clone();
+        let paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            paths,
+            [PathBuf::from("/tc/bin"), PathBuf::from("/declared/bin")]
+        );
+        assert_eq!(config.declared_env(task)["PATH"], "/declared/bin");
     }
 
     #[test]

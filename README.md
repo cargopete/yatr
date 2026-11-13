@@ -293,8 +293,9 @@ yatr run --trace-io build    # Warn if a task writes outside its declared `outpu
 
 # Cache management
 yatr cache stats             # Show cache statistics
-yatr cache clear             # Clear all cached results
+yatr cache clear             # Clear this project's cached results
 yatr cache clear build       # Clear cache for one task
+yatr cache clear --all       # Clear cached results for every project
 yatr cache path              # Show cache directory
 
 # Machine-readable output

@@ -141,7 +141,8 @@ pub fn changed_task_definitions(old: &Config, new: &Config) -> HashSet<String> {
         .filter(|(name, task)| {
             toolchains_changed
                 || old.tasks.get(*name).is_none_or(|prev| {
-                    behaviour(prev) != behaviour(task) || old.task_env(prev) != new.task_env(task)
+                    behaviour(prev) != behaviour(task)
+                        || old.declared_env(prev) != new.declared_env(task)
                 })
         })
         .map(|(name, _)| name.clone())

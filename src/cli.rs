@@ -164,10 +164,14 @@ pub enum CacheCommands {
     /// Show cache statistics
     Stats,
 
-    /// Clear the cache
+    /// Clear this project's cache entries
     Clear {
         /// Clear cache for specific task only
         task: Option<String>,
+
+        /// Clear entries for every project, not just this one
+        #[arg(long)]
+        all: bool,
     },
 
     /// Show cache directory location
