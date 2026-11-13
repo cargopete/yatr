@@ -4,6 +4,14 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Run options after a bare task name (`yatr deploy --dry-run`) are now options, not task names, and every requested name is validated before anything runs (#13).
+- `yatr run a b` plans one graph across all named tasks: shared dependencies run once, independent tasks run in parallel, one summary (#14).
+- The bare form now accepts the `run` options (`yatr --dry-run build`); README and book no longer document the non-existent `yatr --watch` and `yatr --shell run`, and the `cache_dir` doc names the real default (#15).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added

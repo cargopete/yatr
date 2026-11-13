@@ -30,6 +30,11 @@ yatr run [TASKS]... [OPTIONS]
   --trace-io           Warn when a task writes outside its declared `outputs`
 ```
 
+The bare form `yatr [OPTIONS] [TASKS]...` is shorthand for `yatr run` and takes
+the same options, before or after the task names. Every name is checked before
+anything runs, and several names are planned as one graph, so a shared
+dependency runs once.
+
 ## Global options
 
 ```bash
