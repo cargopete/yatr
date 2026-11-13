@@ -265,6 +265,20 @@ impl Config {
         path: &Path,
         visited: &mut std::collections::HashSet<PathBuf>,
     ) -> Result<Self> {
+        Self::load_with_reader(path, visited, &|p| std::fs::read_to_string(p))
+    }
+
+    /// Like [`Config::load`], but reading each file (root and includes) through
+    /// `read`, e.g. from a git revision. The result is not validated.
+    pub fn load_via(path: &Path, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Self> {
+        Self::load_with_reader(path, &mut std::collections::HashSet::new(), read)
+    }
+
+    fn load_with_reader(
+        path: &Path,
+        visited: &mut std::collections::HashSet<PathBuf>,
+        read: &dyn Fn(&Path) -> std::io::Result<String>,
+    ) -> Result<Self> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if !visited.insert(canonical) {
             return Err(YatrError::InvalidConfig {
@@ -272,7 +286,7 @@ impl Config {
             });
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| YatrError::InvalidConfig {
+        let content = read(path).map_err(|e| YatrError::InvalidConfig {
             message: format!("failed to read included config {}: {e}", path.display()),
         })?;
         let mut config: Self = toml::from_str(&content).map_err(|e| YatrError::ConfigParse {
@@ -283,7 +297,7 @@ impl Config {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         for inc in std::mem::take(&mut config.include) {
             let inc_path = base.join(&inc);
-            let included = Self::load_with_includes(&inc_path, visited)?;
+            let included = Self::load_with_reader(&inc_path, visited, read)?;
             config.merge_from(included)?;
         }
 

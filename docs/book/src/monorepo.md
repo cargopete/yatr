@@ -3,9 +3,13 @@
 ## Affected detection
 
 In a large repo you don't want to run everything on every change. `yatr affected
-<git-ref>` lists the tasks touched by changes since a ref — a task is affected
-when one of its `sources`/`watch` globs matches a changed file, and the result
-propagates to everything that (transitively) depends on it.
+<git-ref>` lists the tasks touched by changes since a ref. Changes are taken from
+the ref's merge-base with `HEAD` to the working tree, untracked files included, so
+commits that landed on the ref after you branched don't count. A task is affected
+when one of its `sources`/`watch` globs, relative to its `cwd`, matches a changed
+file, or when its own definition in `yatr.toml` changed (`desc` aside; an edit to
+global `env` counts for every task it reaches, a `[toolchain]` edit for all). The
+result propagates to everything that (transitively) depends on it.
 
 ```bash
 yatr affected main                     # what would I need to run for this branch?
@@ -15,8 +19,13 @@ yatr run --affected origin/main test lint build   # run only the affected ones
 
 Caching gives you *correctness* (unchanged tasks are cache hits); affected
 detection adds *speed at scale* by not even considering tasks git says can't have
-moved. A task that declares no `sources` is treated as always affected — declaring
-`sources` is what unlocks skipping.
+moved. A task that runs something but declares no `sources` is treated as always
+affected — declaring `sources` is what unlocks skipping. An aggregate (`run = []`
+with `depends`) is affected exactly when one of its dependencies is.
+
+`run --affected` applies the filter to dependencies as well: an unaffected
+dependency is skipped, not run, so on a fresh checkout an affected task cannot
+rely on outputs from one that wasn't.
 
 ## Splitting config across files
 

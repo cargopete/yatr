@@ -4,6 +4,12 @@ All notable changes to **yatr** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and from 1.0.0 onward
 yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `yatr affected` diffs from the ref's merge-base to the working tree, counts untracked files, treats a task whose definition changed in `yatr.toml` as affected, matches `sources` against the task's `cwd`, and no longer treats aggregates as always affected; `run --affected` also skips unaffected dependencies (#21).
+
 ## [1.1.0] — 2026-07-15
 
 ### Added
