@@ -370,7 +370,7 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
         let set = affected::detect(git_ref, &config, &config_path, &graph)?.tasks;
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
         if filtered.is_empty() && !opts.json {
-            outln!(
+            errln!(
                 "{} No requested tasks affected since {git_ref} — nothing to do",
                 style("✓").green()
             );
@@ -450,7 +450,7 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     if let Some(path) = &opts.profile {
         write_profile(&all_results, path)?;
         if !opts.json {
-            outln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
+            errln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
         }
     }
 

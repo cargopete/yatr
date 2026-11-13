@@ -421,7 +421,7 @@ fn output_keeps_leading_whitespace_live_and_cached() {
         .arg("pad")
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&cached.stdout).contains("cached"));
+    assert!(was_cached(&cached));
 }
 
 /// A reader that closes stdout early does not make yatr panic.
@@ -459,8 +459,8 @@ fn failure_cancels_running_siblings() {
         &["all"],
     );
     assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("cancelled slow"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cancelled slow"), "{stderr}");
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert!(!dir.path().join("LATE").exists(), "sibling kept running");
 }
@@ -590,7 +590,7 @@ fn summary_reports_wall_time_and_skips_aggregates() {
             .output()
             .unwrap();
         assert!(out.status.success());
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        String::from_utf8_lossy(&out.stderr).into_owned()
     };
 
     let stdout = run("all");
@@ -680,12 +680,12 @@ fn cache_hit_restores_exec_bit_and_symlinks() {
     assert!(run_yatr(p, &["mk"]).status.success());
     // Second run is a hit over the existing outputs.
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert!(was_cached(&out));
     assert_eq!(mode("out/tool"), 0o755, "a hit clobbered the exec bit");
 
     std::fs::remove_dir_all(p.join("out")).unwrap();
     let out = run_yatr(p, &["mk"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert!(was_cached(&out));
     assert_eq!(mode("out/tool"), 0o755, "restored without its exec bit");
     let link = p.join("out/link");
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
@@ -715,7 +715,7 @@ fn yatr_project(toml: &str) -> tempfile::TempDir {
 }
 
 fn was_cached(out: &std::process::Output) -> bool {
-    String::from_utf8_lossy(&out.stdout).contains("✓ cached")
+    String::from_utf8_lossy(&out.stderr).contains("✓ cached")
 }
 
 /// A task with no `sources` has undeclared inputs, so it is never cached.
@@ -1043,4 +1043,36 @@ fn workflow_commands_are_not_prefixed() {
         "{stderr}"
     );
     assert!(lines.iter().any(|l| l.ends_with("│ inside")), "{stdout}");
+}
+
+/// stdout carries only what the task printed, so `yatr gen > file` works; a
+/// single task needs no name prefix, and status and summary go to stderr.
+#[test]
+fn single_task_stdout_is_just_its_output() {
+    let (_dir, out) = run_in(
+        "[tasks.gen]\nno_cache = true\nrun = [\"echo hello\"]\n",
+        &["gen"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("✓ gen"), "{stderr}");
+    assert!(stderr.contains("1 task completed"), "{stderr}");
+}
+
+/// With several tasks the prefix stays, and stdout still holds output only.
+#[test]
+fn several_tasks_keep_the_prefix_and_status_stays_off_stdout() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nno_cache = true\nrun = [\"echo from-a\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"echo from-b\"]\n",
+        &["a", "b"],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["a │ from-a", "b │ from-b"], "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("2 tasks completed"), "{stderr}");
 }

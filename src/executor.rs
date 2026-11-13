@@ -403,12 +403,13 @@ impl Executor {
 
         let semaphore = Arc::new(Semaphore::new(self.parallelism()));
         let multi_progress = MultiProgress::new();
-        let name_width = tasks
+        let runnable: Vec<&str> = tasks
             .iter()
             .filter(|t| !is_aggregate(t))
-            .map(|t| t.name.len())
-            .max()
-            .unwrap_or(0);
+            .map(|t| t.name.as_str())
+            .collect();
+        let name_width = runnable.iter().map(|n| n.len()).max().unwrap_or(0);
+        let prefixed = runnable.len() > 1;
 
         // Ready-queue scheduling: a task starts the moment all of its
         // dependencies have completed, rather than waiting for its whole
@@ -440,7 +441,11 @@ impl Executor {
                     return Ok(None);
                 }
                 let echo = (!exec_config.json).then(|| Echo {
-                    prefix: format!("{} ", style(format!("{:<name_width$} │", task.name)).dim()),
+                    prefix: if prefixed {
+                        format!("{} ", style(format!("{:<name_width$} │", task.name)).dim())
+                    } else {
+                        String::new()
+                    },
                     progress: mp.clone(),
                 });
                 Self::run_one(
@@ -1274,7 +1279,7 @@ impl Executor {
 
         let duration = format!("{:.2}s", result.duration.as_secs_f64());
 
-        outln!(
+        errln!(
             "{} {} {}",
             status,
             style(&result.name).bold(),
@@ -1289,7 +1294,7 @@ impl Executor {
     /// Print execution summary
     #[allow(clippy::unused_self)]
     fn print_summary(&self, results: &[TaskResult], planned: usize, wall: Duration) {
-        outln!();
+        errln!();
 
         let succeeded = results.iter().filter(|r| r.success).count();
         let cancelled = results.iter().filter(|r| r.cancelled).count();
@@ -1298,7 +1303,7 @@ impl Executor {
         let not_run = planned.saturating_sub(results.len());
 
         if failed + cancelled + not_run == 0 {
-            outln!(
+            errln!(
                 "{} {succeeded} {} completed in {:.2}s ({cached} cached)",
                 style("✓").green().bold(),
                 if succeeded == 1 { "task" } else { "tasks" },
@@ -1312,7 +1317,7 @@ impl Executor {
             if not_run > 0 {
                 parts.push(format!("{not_run} not run"));
             }
-            outln!(
+            errln!(
                 "{} {} in {:.2}s",
                 style("✗").red().bold(),
                 parts.join(", "),

@@ -74,9 +74,16 @@ run = ["cargo watch -x run"]
 
 ## Output
 
-A task's stdout and stderr are streamed as it runs, each line prefixed with the
-task's name so parallel tasks stay readable. stderr stays on stderr, and is
-shown for tasks that succeed as well as for those that fail. A cache hit replays
+A task's stdout and stderr are streamed as it runs. When a run has more than
+one task with commands, each line is prefixed with the task's name so parallel
+tasks stay readable; a run of a single task prints its output as is. stderr
+stays on stderr, and is shown for tasks that succeed as well as for those that
+fail.
+
+yatr's own status lines (`✓ build 1.20s`) and the closing summary go to stderr,
+so stdout holds only what the tasks printed: `yatr gen > out.txt` captures the
+generator's output and nothing else. The prefix does not depend on whether
+stdout is a terminal, so a multi-task run reads the same in CI as locally. A cache hit replays
 the output captured when the task last ran (all of it on stdout, since the two
 streams are stored together). With `--json` nothing is streamed; each task's
 output is in the `output` field of the document instead.
