@@ -6,6 +6,10 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Task output lines starting with `::` are printed without the task-name prefix, so GitHub Actions workflow commands and log groups work again (#49).
+
 ## [1.2.0] - 2026-11-13
 
 Several fixes change behaviour; see **Changed** before upgrading.

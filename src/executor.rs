@@ -62,7 +62,6 @@ impl Capture {
     }
 }
 
-/// Echoes a running task's lines to the terminal, prefixed with its name.
 /// What one scheduled run of a task carries besides the task itself.
 struct TaskRun<'a> {
     dep_keys: &'a [String],
@@ -71,6 +70,7 @@ struct TaskRun<'a> {
     cancel: CancellationToken,
 }
 
+/// Echoes a running task's lines to the terminal, prefixed with its name.
 #[derive(Clone)]
 struct Echo {
     prefix: String,
@@ -79,7 +79,10 @@ struct Echo {
 
 impl Echo {
     fn line(&self, line: &str, to_stderr: bool) {
-        let prefix = if line.is_empty() {
+        // CI runners only read workflow commands (`::error::`) at the start of a line.
+        let prefix = if line.starts_with("::") {
+            ""
+        } else if line.is_empty() {
             self.prefix.trim_end()
         } else {
             &self.prefix

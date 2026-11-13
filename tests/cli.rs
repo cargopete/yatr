@@ -1019,3 +1019,28 @@ fn cache_clear_is_scoped_to_the_project() {
         "--all left b's entry"
     );
 }
+
+/// GitHub Actions workflow commands only work at the start of a line, so they
+/// are passed through without the task-name prefix.
+#[cfg(unix)]
+#[test]
+fn workflow_commands_are_not_prefixed() {
+    let (_dir, out) = run_in(
+        "[tasks.a]\nshell = true\nno_cache = true\n\
+         run = [\"echo '::group::decode'; echo inside; echo '::error file=x.rs::bad' >&2; echo '::endgroup::'\"]\n\
+         [tasks.b]\nno_cache = true\nrun = [\"echo b\"]\n\
+         [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n",
+        &["all"],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"::group::decode"), "{stdout}");
+    assert!(lines.contains(&"::endgroup::"), "{stdout}");
+    assert!(
+        stderr.lines().any(|l| l == "::error file=x.rs::bad"),
+        "{stderr}"
+    );
+    assert!(lines.iter().any(|l| l.ends_with("│ inside")), "{stdout}");
+}

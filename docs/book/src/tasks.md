@@ -81,6 +81,10 @@ the output captured when the task last ran (all of it on stdout, since the two
 streams are stored together). With `--json` nothing is streamed; each task's
 output is in the `output` field of the document instead.
 
+A line that starts with `::` is printed without the prefix, so GitHub Actions
+workflow commands (`::error::`, `::group::`, `::endgroup::`) emitted by a task
+still annotate and fold the log.
+
 If yatr's stdout is closed early (`yatr test | head`), further output is dropped
 and the run carries on; the exit status still reports how the tasks went.
 
