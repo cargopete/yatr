@@ -54,6 +54,18 @@ pub enum YatrError {
     #[diagnostic(code(yatr::exec::command_failed))]
     CommandFailed { command: String, code: i32 },
 
+    #[error("Task '{task}' timed out after {seconds}s")]
+    #[diagnostic(code(yatr::exec::timeout))]
+    TimedOut { task: String, seconds: u64 },
+
+    #[error("cancelled")]
+    #[diagnostic(code(yatr::exec::cancelled))]
+    Cancelled,
+
+    #[error("Interrupted by signal {signal}")]
+    #[diagnostic(code(yatr::exec::interrupted))]
+    Interrupted { signal: i32 },
+
     #[error("Command not found: {command}")]
     #[diagnostic(
         code(yatr::exec::command_not_found),
@@ -113,6 +125,8 @@ impl YatrError {
             Self::TaskFailed { code, .. } | Self::CommandFailed { code, .. } => {
                 u8::try_from(*code).ok().filter(|c| *c != 0).unwrap_or(1)
             }
+            Self::TimedOut { .. } => 124,
+            Self::Interrupted { signal } => u8::try_from(128 + signal).unwrap_or(1),
             _ => 1,
         }
     }

@@ -447,3 +447,80 @@ fn closed_stdout_is_not_a_panic() {
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert_eq!(out.status.code(), Some(0), "{stderr}");
 }
+
+/// When one task fails, its running siblings are killed and reported cancelled.
+#[cfg(unix)]
+#[test]
+fn failure_cancels_running_siblings() {
+    let (dir, out) = run_in(
+        "[tasks.slow]\nshell = true\nno_cache = true\nrun = [\"sleep 2; touch LATE\"]\n\
+         [tasks.bad]\nno_cache = true\nrun = [\"false\"]\n\
+         [tasks.all]\ndepends = [\"slow\", \"bad\"]\nrun = []\n",
+        &["all"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cancelled slow"), "{stdout}");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!dir.path().join("LATE").exists(), "sibling kept running");
+}
+
+/// `--keep-going` lets independent tasks finish after a failure.
+#[cfg(unix)]
+#[test]
+fn keep_going_finishes_independent_tasks() {
+    let (dir, out) = run_in(
+        "[tasks.slow]\nshell = true\nno_cache = true\nrun = [\"sleep 1; touch DONE\"]\n\
+         [tasks.bad]\nno_cache = true\nrun = [\"false\"]\n\
+         [tasks.after]\ndepends = [\"bad\"]\nshell = true\nno_cache = true\nrun = [\"touch AFTER\"]\n\
+         [tasks.all]\ndepends = [\"slow\", \"after\"]\nrun = []\n",
+        &["run", "--keep-going", "all"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(dir.path().join("DONE").exists());
+    assert!(!dir.path().join("AFTER").exists());
+}
+
+/// SIGTERM to yatr reaches the task's whole process group.
+#[cfg(unix)]
+#[test]
+fn sigterm_kills_task_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.slow]\nshell = true\nno_cache = true\nrun = [\"sleep 2; touch LATE\"]\n",
+    )
+    .unwrap();
+    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("yatr"))
+        .current_dir(dir.path())
+        .arg("slow")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(143));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!dir.path().join("LATE").exists(), "task outlived yatr");
+}
+
+/// `timeout` kills a task that runs too long.
+#[cfg(unix)]
+#[test]
+fn timeout_is_enforced() {
+    let start = std::time::Instant::now();
+    let (_dir, out) = run_in(
+        "[tasks.slow]\nno_cache = true\ntimeout = 1\nrun = [\"sleep 5\"]\n",
+        &["slow"],
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(4));
+    assert_eq!(out.status.code(), Some(124));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("timed out after 1s"), "{stderr}");
+}

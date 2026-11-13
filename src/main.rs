@@ -114,6 +114,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             profile,
             affected,
             trace_io,
+            keep_going,
         } => {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
@@ -130,6 +131,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
                     profile: profile.clone(),
                     affected: affected.clone(),
                     trace_io: *trace_io,
+                    keep_going: *keep_going,
                 };
                 run_tasks(tasks, opts, cli).await
             }
@@ -332,6 +334,7 @@ struct RunOpts {
     profile: Option<std::path::PathBuf>,
     affected: Option<String>,
     trace_io: bool,
+    keep_going: bool,
 }
 
 async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
@@ -414,6 +417,7 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
         verbose: cli.verbose,
         json: opts.json,
         trace_io: opts.trace_io,
+        keep_going: opts.keep_going,
         run_start: std::time::Instant::now(),
     };
 
@@ -488,6 +492,7 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
                 "output": r.output,
                 "error": r.error,
                 "exit_code": r.exit_code,
+                "cancelled": r.cancelled,
             })
         })
         .collect();
@@ -496,7 +501,8 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
         "tasks": tasks,
         "summary": {
             "succeeded": results.iter().filter(|r| r.success).count(),
-            "failed": results.iter().filter(|r| !r.success).count(),
+            "failed": results.iter().filter(|r| !r.success && !r.cancelled).count(),
+            "cancelled": results.iter().filter(|r| r.cancelled).count(),
             "cached": results.iter().filter(|r| r.cached).count(),
             "duration_ms": results.iter().map(|r| ms(r.duration)).sum::<u64>(),
         }

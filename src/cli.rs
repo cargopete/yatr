@@ -79,6 +79,10 @@ pub enum Commands {
         /// Warn when a task writes files outside its declared `outputs`
         #[arg(long)]
         trace_io: bool,
+
+        /// After a failure, keep running tasks that do not depend on it
+        #[arg(short, long)]
+        keep_going: bool,
     },
 
     /// List available tasks

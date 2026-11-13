@@ -254,6 +254,7 @@ yatr run test build          # Run multiple tasks
 yatr run --dry-run build     # Show plan without executing
 yatr run --force build       # Ignore cache
 yatr run --parallel 4 test   # Limit parallelism
+yatr run --keep-going ci     # Let independent tasks finish after a failure
 
 # List tasks
 yatr list                    # Show all tasks
@@ -634,7 +635,7 @@ sources = ["src/**"]                 # Files affecting the cache key
 outputs = ["target/app"]             # Output files/dirs (captured & restored)
 no_cache = false                     # Disable caching for this task
 allow_failure = false                # Continue on failure
-timeout = 300                        # Timeout in seconds
+timeout = 300                        # Kill `run` commands after this many seconds
 ```
 
 A JSON Schema for all of this is shipped (`yatr schema` / [`yatr.schema.json`](yatr.schema.json))
