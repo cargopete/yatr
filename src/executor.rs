@@ -62,7 +62,6 @@ impl Capture {
     }
 }
 
-/// Echoes a running task's lines to the terminal, prefixed with its name.
 /// What one scheduled run of a task carries besides the task itself.
 struct TaskRun<'a> {
     dep_keys: &'a [String],
@@ -71,6 +70,7 @@ struct TaskRun<'a> {
     cancel: CancellationToken,
 }
 
+/// Echoes a running task's lines to the terminal, prefixed with its name.
 #[derive(Clone)]
 struct Echo {
     prefix: String,
@@ -79,7 +79,10 @@ struct Echo {
 
 impl Echo {
     fn line(&self, line: &str, to_stderr: bool) {
-        let prefix = if line.is_empty() {
+        // CI runners only read workflow commands (`::error::`) at the start of a line.
+        let prefix = if line.starts_with("::") {
+            ""
+        } else if line.is_empty() {
             self.prefix.trim_end()
         } else {
             &self.prefix
@@ -91,6 +94,14 @@ impl Echo {
                 outln!("{prefix}{line}");
             }
         });
+    }
+
+    /// Show a command about to run, for `--verbose`.
+    fn command(&self, cmd: &str) {
+        for (i, line) in cmd.lines().enumerate() {
+            let lead = if i == 0 { "$ " } else { "  " };
+            self.line(&style(format!("{lead}{line}")).dim().to_string(), true);
+        }
     }
 
     /// Print output that was not streamed (a cache hit, a script, a plugin).
@@ -311,8 +322,10 @@ pub struct ExecutorConfig {
     pub cwd: std::path::PathBuf,
     /// Use shell for commands
     pub shell: bool,
-    /// Verbose output
+    /// Print each command before it runs
     pub verbose: bool,
+    /// Print task output and failures only: no status lines, spinner or summary
+    pub quiet: bool,
     /// Suppress human output; caller emits machine-readable JSON instead
     pub json: bool,
     /// Warn when a task writes files outside its declared `outputs`
@@ -332,6 +345,7 @@ impl Default for ExecutorConfig {
             cwd: std::env::current_dir().unwrap_or_default(),
             shell: false,
             verbose: false,
+            quiet: false,
             json: false,
             trace_io: false,
             run_start: Instant::now(),
@@ -400,12 +414,13 @@ impl Executor {
 
         let semaphore = Arc::new(Semaphore::new(self.parallelism()));
         let multi_progress = MultiProgress::new();
-        let name_width = tasks
+        let runnable: Vec<&str> = tasks
             .iter()
             .filter(|t| !is_aggregate(t))
-            .map(|t| t.name.len())
-            .max()
-            .unwrap_or(0);
+            .map(|t| t.name.as_str())
+            .collect();
+        let name_width = runnable.iter().map(|n| n.len()).max().unwrap_or(0);
+        let prefixed = runnable.len() > 1;
 
         // Ready-queue scheduling: a task starts the moment all of its
         // dependencies have completed, rather than waiting for its whole
@@ -437,7 +452,11 @@ impl Executor {
                     return Ok(None);
                 }
                 let echo = (!exec_config.json).then(|| Echo {
-                    prefix: format!("{} ", style(format!("{:<name_width$} │", task.name)).dim()),
+                    prefix: if prefixed {
+                        format!("{} ", style(format!("{:<name_width$} │", task.name)).dim())
+                    } else {
+                        String::new()
+                    },
                     progress: mp.clone(),
                 });
                 Self::run_one(
@@ -497,7 +516,7 @@ impl Executor {
         let first = all_results.len();
         let (mut signals, _active) = signals::subscribe();
         let mut interrupted = None;
-        let mut failure = None;
+        let mut failures = Vec::new();
         loop {
             let joined = tokio::select! {
                 joined = running.join_next() => match joined {
@@ -523,15 +542,11 @@ impl Executor {
                     .get_task(&finished)
                     .is_some_and(|t| t.config.allow_failure);
 
-            if !self.exec_config.json {
+            if !self.exec_config.json && (failed || !self.exec_config.quiet) {
                 Self::print_task_result(&result);
             }
-            if failed && failure.is_none() {
-                failure = Some(YatrError::TaskFailed {
-                    task: finished.clone(),
-                    code: result.exit_code.unwrap_or(1),
-                    stderr: None,
-                });
+            if failed {
+                failures.push((finished.clone(), result.exit_code.unwrap_or(1)));
             }
             let ran = !result.cancelled && !failed;
             all_results.push(result);
@@ -553,17 +568,24 @@ impl Executor {
             );
         }
 
-        if !self.exec_config.json {
+        if !self.exec_config.json && !self.exec_config.quiet {
             let planned = in_degree
                 .keys()
                 .filter(|name| !graph.get_task(name).is_some_and(is_aggregate))
                 .count();
             self.print_summary(&all_results[first..], planned, started.elapsed());
         }
-        match (interrupted, failure) {
-            (Some(signal), _) => Err(YatrError::Interrupted { signal }),
-            (None, Some(failure)) => Err(failure),
-            (None, None) => Ok(()),
+        if let Some(signal) = interrupted {
+            return Err(YatrError::Interrupted { signal });
+        }
+        match <[_; 1]>::try_from(failures) {
+            Ok([(task, code)]) => Err(YatrError::TaskFailed {
+                task,
+                code,
+                stderr: None,
+            }),
+            Err(failures) if failures.is_empty() => Ok(()),
+            Err(tasks) => Err(YatrError::TasksFailed { tasks }),
         }
     }
 
@@ -620,7 +642,7 @@ impl Executor {
         run: TaskRun<'_>,
     ) -> Result<TaskResult> {
         // Progress spinner is human-only; suppress it in JSON mode.
-        let pb = (!exec_config.json).then(|| {
+        let pb = (!exec_config.json && !exec_config.quiet).then(|| {
             let pb = mp.add(ProgressBar::new_spinner());
             let style = ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
@@ -977,6 +999,9 @@ impl Executor {
             reason: "Foreground task must have at least one command".to_string(),
         })?;
 
+        if let Some(echo) = ctx.sink.echo.as_ref().filter(|_| exec_config.verbose) {
+            echo.command(cmd);
+        }
         let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command
@@ -1094,6 +1119,9 @@ impl Executor {
         exec_config: &ExecutorConfig,
         ctx: &Ctx,
     ) -> Result<()> {
+        if let Some(echo) = ctx.sink.echo.as_ref().filter(|_| exec_config.verbose) {
+            echo.command(cmd);
+        }
         let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command
@@ -1184,7 +1212,6 @@ impl Executor {
     }
 
     /// Print dry-run execution plan
-    #[allow(clippy::unused_self)]
     fn print_dry_run(&self, plan: &ExecutionPlan) {
         outln!("{}", style("Execution plan (dry run):").bold().cyan());
         outln!();
@@ -1203,13 +1230,13 @@ impl Executor {
             );
 
             for task in group {
-                Self::print_planned_task(task);
+                Self::print_planned_task(task, self.exec_config.shell);
             }
         }
     }
 
     /// One task's entry in the dry-run plan: what runs, where, with what env.
-    fn print_planned_task(task: &TaskNode) {
+    fn print_planned_task(task: &TaskNode, shell: bool) {
         let config = &task.config;
         if is_aggregate(task) {
             outln!(
@@ -1220,6 +1247,18 @@ impl Executor {
             return;
         }
         outln!("  {}", style(&task.name).bold());
+        let modes: Vec<&str> = [
+            (shell || config.shell.unwrap_or(false), "shell"),
+            (config.parallel, "parallel"),
+            (config.no_cache, "no_cache"),
+            (config.foreground, "foreground"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if !modes.is_empty() {
+            outln!("    {} {}", style("mode:").dim(), modes.join(", "));
+        }
         if let Some(cwd) = &config.cwd {
             outln!("    {} {}", style("cwd:").dim(), cwd.display());
         }
@@ -1271,7 +1310,7 @@ impl Executor {
 
         let duration = format!("{:.2}s", result.duration.as_secs_f64());
 
-        outln!(
+        errln!(
             "{} {} {}",
             status,
             style(&result.name).bold(),
@@ -1286,7 +1325,7 @@ impl Executor {
     /// Print execution summary
     #[allow(clippy::unused_self)]
     fn print_summary(&self, results: &[TaskResult], planned: usize, wall: Duration) {
-        outln!();
+        errln!();
 
         let succeeded = results.iter().filter(|r| r.success).count();
         let cancelled = results.iter().filter(|r| r.cancelled).count();
@@ -1295,7 +1334,7 @@ impl Executor {
         let not_run = planned.saturating_sub(results.len());
 
         if failed + cancelled + not_run == 0 {
-            outln!(
+            errln!(
                 "{} {succeeded} {} completed in {:.2}s ({cached} cached)",
                 style("✓").green().bold(),
                 if succeeded == 1 { "task" } else { "tasks" },
@@ -1309,7 +1348,7 @@ impl Executor {
             if not_run > 0 {
                 parts.push(format!("{not_run} not run"));
             }
-            outln!(
+            errln!(
                 "{} {} in {:.2}s",
                 style("✗").red().bold(),
                 parts.join(", "),

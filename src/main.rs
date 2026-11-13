@@ -130,6 +130,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
 
             let exec_config = ExecutorConfig {
                 verbose: cli.verbose,
+                quiet: cli.quiet,
                 cwd: std::env::current_dir()?,
                 ..Default::default()
             };
@@ -193,11 +194,12 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         } else {
             format!(", {} warning(s)", warnings.len())
         };
+        let count = graph.task_names().count();
         outln!(
-            "{} {} is valid ({} tasks{suffix})",
+            "{} {} is valid ({count} {}{suffix})",
             style("✓").green(),
             path.display(),
-            graph.task_names().count()
+            if count == 1 { "task" } else { "tasks" },
         );
         Ok(())
     } else {
@@ -389,8 +391,8 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     let tasks: &[String] = if let Some(git_ref) = &opts.affected {
         let set = affected::detect(git_ref, &config, &config_path, &graph)?.tasks;
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
-        if filtered.is_empty() && !opts.json {
-            outln!(
+        if filtered.is_empty() && !opts.json && !cli.quiet {
+            errln!(
                 "{} No requested tasks affected since {git_ref} — nothing to do",
                 style("✓").green()
             );
@@ -450,6 +452,7 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
         cwd: std::env::current_dir()?,
         shell: opts.shell,
         verbose: cli.verbose,
+        quiet: cli.quiet,
         json: opts.json,
         trace_io: opts.trace_io,
         keep_going: opts.keep_going,
@@ -469,8 +472,8 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     }
     if let Some(path) = &opts.profile {
         write_profile(&all_results, path)?;
-        if !opts.json {
-            outln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
+        if !opts.json && !cli.quiet {
+            errln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
         }
     }
 

@@ -50,7 +50,11 @@ pub enum YatrError {
         stderr: Option<String>,
     },
 
-    #[error("Command '{command}' failed with exit code {code}")]
+    #[error("{} tasks failed: {}", .tasks.len(), list_failures(.tasks))]
+    #[diagnostic(code(yatr::exec::failed))]
+    TasksFailed { tasks: Vec<(String, i32)> },
+
+    #[error("Command failed with exit code {code}: {command}")]
     #[diagnostic(code(yatr::exec::command_failed))]
     CommandFailed { command: String, code: i32 },
 
@@ -130,6 +134,14 @@ impl YatrError {
             _ => 1,
         }
     }
+}
+
+fn list_failures(tasks: &[(String, i32)]) -> String {
+    tasks
+        .iter()
+        .map(|(task, code)| format!("{task} (exit code {code})"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Result type alias for YATR operations

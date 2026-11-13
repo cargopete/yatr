@@ -260,8 +260,8 @@ Commands:
 
 Options:
   -c, --config <PATH>  Config file path
-  -v, --verbose        Verbose output
-  -q, --quiet          Suppress output
+  -v, --verbose        Print each command before it runs
+  -q, --quiet          Only task output and errors: no status lines or summary
       --cwd <DIR>      Working directory
       --no-color       Disable colors
   -h, --help           Print help

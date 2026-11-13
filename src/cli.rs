@@ -17,12 +17,12 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// Verbose output
+    /// Print each command before it runs
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
-    /// Suppress output (quiet mode)
-    #[arg(short, long, global = true)]
+    /// Print only task output and errors, no status lines or summary
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
     /// Working directory
