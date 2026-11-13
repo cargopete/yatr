@@ -8,6 +8,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `yatr watch` prints its banner and separators to stderr, like the run status lines (#44).
 - **Status and summary lines now go to stderr, not stdout**, and a run of a single task prints its output without the `task │` prefix. stdout carries only what tasks print, so `yatr gen > out.txt` captures the output alone. Anything that parsed yatr's stdout for `✓`, `✗` or the summary must read stderr instead, or use `--json` (#44).
 
 ### Fixed

@@ -17,6 +17,7 @@ use crate::error::{Result, YatrError};
 use crate::executor::{Executor, ExecutorConfig};
 use crate::globs;
 use crate::graph::TaskGraph;
+use crate::output::errln;
 
 /// Patterns used when no task in the watched chain declares `watch` or `sources`.
 const DEFAULT_PATTERNS: &[&str] = &["**/*.rs", "**/*.toml", "Cargo.lock"];
@@ -189,7 +190,7 @@ pub async fn watch_and_run(
     };
 
     clear_screen();
-    println!(
+    errln!(
         "{} Watching for changes to run task '{}'",
         style("👀").cyan(),
         style(task_name).bold()
@@ -199,21 +200,21 @@ pub async fn watch_and_run(
         .flat_map(|s| s.patterns.iter().map(String::as_str))
         .collect();
     shown.dedup();
-    println!("   Patterns: {}", style(shown.join(", ")).dim());
-    println!();
+    errln!("   Patterns: {}", style(shown.join(", ")).dim());
+    errln!();
 
     // The cache stays off in watch mode: a re-run is what was asked for.
     let executor = Executor::new(config.clone(), exec_config.clone(), None);
 
-    println!("{}", style("─".repeat(60)).dim());
+    errln!("{}", style("─".repeat(60)).dim());
     let _ = executor.execute(graph, task_name).await;
-    println!("{}", style("─".repeat(60)).dim());
+    errln!("{}", style("─".repeat(60)).dim());
 
     loop {
         if let Some(changed) = watcher.wait_for_change().await {
             clear_screen();
-            println!();
-            println!(
+            errln!();
+            errln!(
                 "{} Changed: {}",
                 style("📝").yellow(),
                 changed
@@ -222,11 +223,11 @@ pub async fn watch_and_run(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            println!("{}", style("─".repeat(60)).dim());
+            errln!("{}", style("─".repeat(60)).dim());
 
             let _ = executor.execute(graph, task_name).await;
-            println!("{}", style("─".repeat(60)).dim());
-            println!("{} Waiting for changes...", style("👀").cyan());
+            errln!("{}", style("─".repeat(60)).dim());
+            errln!("{} Waiting for changes...", style("👀").cyan());
         }
     }
 }
