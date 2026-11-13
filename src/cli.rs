@@ -56,7 +56,7 @@ pub enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Number of parallel tasks (0 = auto)
+        /// Number of parallel tasks (0 = `[settings] parallelism`, else CPU count)
         #[arg(short, long, default_value = "0")]
         parallel: usize,
 

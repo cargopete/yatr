@@ -510,7 +510,12 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
             "failed": results.iter().filter(|r| !r.success && !r.cancelled).count(),
             "cancelled": results.iter().filter(|r| r.cancelled).count(),
             "cached": results.iter().filter(|r| r.cached).count(),
-            "duration_ms": results.iter().map(|r| ms(r.duration)).sum::<u64>(),
+            "duration_ms": results
+                .iter()
+                .map(|r| ms(r.start_offset + r.duration))
+                .max()
+                .unwrap_or_default()
+                .saturating_sub(results.iter().map(|r| ms(r.start_offset)).min().unwrap_or_default()),
         }
     });
 

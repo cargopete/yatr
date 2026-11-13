@@ -22,7 +22,7 @@ Commands:
 yatr run [TASKS]... [OPTIONS]
   --dry-run            Show the execution plan without running
   --force              Ignore the cache
-  --parallel <N>       Limit parallelism (0 = auto)
+  --parallel <N>       Limit parallelism (0 = `[settings] parallelism`, else CPU count)
   --shell              Use a shell to execute commands
   --json               Structured JSON output instead of human output
   --profile <PATH>     Write a Chrome trace of the run

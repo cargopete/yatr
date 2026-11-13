@@ -17,6 +17,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Task output is streamed as it runs, prefixed with the task name; stderr is kept on success, leading whitespace is preserved, and a closed stdout no longer panics (#22).
 - A failing task's running siblings are killed by process group and reported cancelled, SIGINT and SIGTERM are forwarded to task processes, and `--keep-going` lets independent tasks finish (#18).
 - The task `timeout` field is enforced for `run` commands; a task over time is killed and exits 124 (#16).
+- `[settings] shell` and `[settings] parallelism` are honoured; `--parallel` still overrides the latter (#17).
+- Reporting: the summary gives wall time and says "1 task", `graph` and `--dry-run` print in a stable order with dependencies as declared, the dry-run plan names each task with its `cwd`, `env` and indented multi-line commands, and a `run = []` aggregate is no longer counted or shown as cached (#23).
 
 ## [1.1.1] - 2026-11-13
 
