@@ -125,5 +125,6 @@ fn run_affected_skips_unaffected_dependencies() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     ran.sort_unstable();
-    assert_eq!(ran, ["ci", "web"]);
+    // `ci` is an aggregate, which is not reported as a task of its own.
+    assert_eq!(ran, ["web"]);
 }

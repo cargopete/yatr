@@ -17,10 +17,11 @@ use std::hash::BuildHasher;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use globset::{GlobBuilder, GlobSetBuilder};
+use globset::GlobSetBuilder;
 
 use crate::config::{Config, TaskConfig};
 use crate::error::{Result, YatrError};
+use crate::globs;
 use crate::graph::TaskGraph;
 
 /// The outcome of affected detection.
@@ -158,9 +159,8 @@ fn behaviour(task: &TaskConfig) -> Option<serde_json::Value> {
 /// normalised, or `None` if that leaves `root` (git paths cannot reach it).
 fn task_dir(task: &TaskConfig, root: &Path) -> Option<PathBuf> {
     let joined = task
-        .cwd
-        .as_ref()
-        .map_or_else(|| root.to_path_buf(), |c| root.join(c));
+        .working_dir()
+        .map_or_else(|| root.to_path_buf(), |w| root.join(w));
     let mut dir = PathBuf::new();
     for c in joined.components() {
         match c {
@@ -189,7 +189,7 @@ fn matches_inputs(task: &TaskConfig, changed: &[String], root: &Path) -> bool {
 
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
-        if let Ok(g) = GlobBuilder::new(p).literal_separator(true).build() {
+        if let Ok(g) = globs::compile(p) {
             builder.add(g);
         }
     }

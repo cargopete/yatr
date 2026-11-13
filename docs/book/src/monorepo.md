@@ -42,4 +42,6 @@ depends = ["fe-build", "be-build"]   # tasks defined in the included files
 
 Includes are resolved relative to the including file and merged recursively
 (cycles are detected). Tasks and `env` are composed; the root file's `settings`
-are authoritative. A task defined in two files is an error — names are global.
+are authoritative. A task's paths (`cwd`, `sources`, `outputs`, `watch`) are
+relative to the file that defines it, so `frontend/yatr.toml` can say
+`sources = ["src/**"]` and mean `frontend/src`. A task defined in two files is an error — names are global.
