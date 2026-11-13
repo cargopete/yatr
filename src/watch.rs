@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::{GlobSet, GlobSetBuilder};
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use tokio::sync::mpsc;
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::error::{Result, YatrError};
 use crate::executor::{Executor, ExecutorConfig};
+use crate::globs;
 use crate::graph::TaskGraph;
 
 /// Patterns used when no task in the watched chain declares `watch` or `sources`.
@@ -60,9 +61,7 @@ fn resolve(path: &Path) -> PathBuf {
 fn compile(scope: &WatchScope) -> Result<CompiledScope> {
     let mut builder = GlobSetBuilder::new();
     for pattern in &scope.patterns {
-        let glob = GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()
+        let glob = globs::compile(pattern)
             .map_err(|e| watch_err(&format!("Invalid glob '{pattern}': {e}")))?;
         builder.add(glob);
     }
@@ -251,9 +250,8 @@ pub fn collect_watch_scopes(
         }
         let base = task
             .config
-            .cwd
-            .as_ref()
-            .map_or_else(|| root.to_path_buf(), |c| root.join(c));
+            .working_dir()
+            .map_or_else(|| root.to_path_buf(), |w| root.join(w));
         scopes.push(WatchScope {
             base,
             patterns: patterns.clone(),
@@ -263,8 +261,8 @@ pub fn collect_watch_scopes(
     if scopes.is_empty() {
         let base = graph
             .get_task(task_name)
-            .and_then(|t| t.config.cwd.as_ref())
-            .map_or_else(|| root.to_path_buf(), |c| root.join(c));
+            .and_then(|t| t.config.working_dir())
+            .map_or_else(|| root.to_path_buf(), |w| root.join(w));
         scopes.push(WatchScope {
             base,
             patterns: DEFAULT_PATTERNS.iter().map(ToString::to_string).collect(),

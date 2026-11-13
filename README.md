@@ -7,7 +7,7 @@ Yet another task runner. But this one's actually good.
 ```
 yatr test          # Run tests
 yatr build         # Build with dependencies
-yatr --watch test  # Re-run on file changes
+yatr watch test    # Re-run on file changes
 ```
 
 A fast, single-binary, polyglot task runner with a cache that actually tells the
@@ -166,9 +166,13 @@ Available Rhai functions:
 
 ### Caching
 
-Tasks are cached by default based on:
-- Task configuration (commands, env vars)
-- Source file contents (if `sources` specified)
+A task that declares `sources` is cached, keyed on:
+- Task configuration (commands, global and task env, pinned toolchains)
+- Source file contents
+- Ambient variables named in `env_inputs`
+- The keys of its dependencies
+
+A task with no `sources` has no declared inputs and is never cached.
 
 ```toml
 [tasks.build]
@@ -176,6 +180,10 @@ run = ["cargo build --release"]
 sources = ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
 outputs = ["target/release/myapp"]
 ```
+
+Patterns are relative to the task's directory: `*` stops at `/`, `**` crosses
+it. Sources respect `.gitignore`, except a path you name inside an ignored
+directory (`gen/schema.json`, `web/dist/**`), which is hashed anyway.
 
 Disable caching:
 
@@ -219,7 +227,7 @@ run = ["find src -name '*.rs' | wc -l"]
 Or per-invocation:
 
 ```bash
-yatr --shell run lines
+yatr run --shell lines   # or: yatr lines --shell
 ```
 
 ## CLI Reference
@@ -257,8 +265,10 @@ Options:
 yatr test                    # Run 'test' task
 yatr run test build          # Run multiple tasks
 yatr run --dry-run build     # Show plan without executing
+yatr build --dry-run         # Same: the bare form takes the `run` options
 yatr run --force build       # Ignore cache
 yatr run --parallel 4 test   # Limit parallelism
+yatr run --keep-going ci     # Let independent tasks finish after a failure
 
 # List tasks
 yatr list                    # Show all tasks
@@ -520,7 +530,7 @@ almost no two projects share a toolchain.
 
 ```toml
 # The aggregate task is named `ci`, not `check`. `yatr check` is a builtin that
-# validates the config file, and it shadows a task of that name without warning.
+# validates the config file, and the bare form reaches the builtin, not the task.
 [tasks.ci]
 desc = "What CI runs"
 depends = ["fmt-check", "lint", "test"]
@@ -528,7 +538,8 @@ run = []
 ```
 
 Reserved names to route around when naming tasks: `run`, `list`, `watch`, `graph`, `cache`,
-`init`, `check`, `schema`, `lsp`, `affected`, `help`.
+`init`, `check`, `schema`, `lsp`, `affected`, `help`. A task with one of these names only runs
+as `yatr run <name>`, and `yatr check` warns about it.
 
 For repos with a generated artifact committed alongside its source, a drift task is the single
 highest-value thing yatr can run, and it needs no CI infrastructure at all:
@@ -601,8 +612,8 @@ KEY = "value"
 # Global settings
 [settings]
 cache = true              # Enable caching (default: true)
-cache_dir = ".yatr"       # Cache directory
-parallelism = 0           # Max parallel tasks (0 = CPU count)
+cache_dir = ".yatr"       # Cache directory, relative to this file
+parallelism = 0           # Max parallel tasks (0 = CPU count); --parallel overrides
 watch_debounce_ms = 300   # Watch debounce delay
 shell = "/bin/sh"         # Default shell when shell mode is enabled
 
@@ -631,7 +642,8 @@ wasm = "plugin.wasm"                 # WASM plugin (path, http(s):// or github:â
 depends = ["other-task"]             # Run these first
 parallel = false                     # Run commands in parallel
 env = { KEY = "value" }              # Task-specific env vars
-cwd = "./subdir"                     # Working directory
+env_inputs = ["CLANG"]               # Ambient env vars that affect the cache key
+cwd = "./subdir"                     # Working directory, relative to this file
 shell = false                        # Use shell for commands
 foreground = true                    # Inherit stdio (dev servers); not cached
 watch = ["**/*.rs"]                  # File patterns for watch mode
@@ -639,8 +651,12 @@ sources = ["src/**"]                 # Files affecting the cache key
 outputs = ["target/app"]             # Output files/dirs (captured & restored)
 no_cache = false                     # Disable caching for this task
 allow_failure = false                # Continue on failure
-timeout = 300                        # Timeout in seconds
+timeout = 300                        # Kill `run` commands after this many seconds
 ```
+
+Paths in a task (`cwd`, `sources`, `outputs`, `watch`, `wasm`) resolve against the directory
+of the file that declares it, so a task runs the same from any subdirectory and an included
+file's tasks see paths relative to that file.
 
 A JSON Schema for all of this is shipped (`yatr schema` / [`yatr.schema.json`](yatr.schema.json))
 and powers editor autocomplete + the [language server](#language-server).
