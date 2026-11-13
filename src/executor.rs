@@ -259,11 +259,16 @@ impl Executor {
             .clone()
             .unwrap_or_else(|| exec_config.cwd.clone());
 
+        let key = cache
+            .map(|_| Cache::compute_key(&task.name, &task.config, config, &cwd))
+            .transpose()?;
+        let cacheable = Cache::caches(&task.config);
+
         // Check cache
         if !exec_config.force {
-            if let Some(cache) = cache {
-                if Cache::caches(&task.config) {
-                    if let Some(cached) = cache.get(&task.name, &task.config, &cwd).await? {
+            if let (Some(cache), Some(key)) = (cache, &key) {
+                if cacheable {
+                    if let Some(cached) = cache.get(&task.name, key, &cwd).await? {
                         return Ok(TaskResult {
                             name: task.name.clone(),
                             success: true,
@@ -330,10 +335,10 @@ impl Executor {
         match result {
             Ok(output) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
-                if let Some(cache) = cache {
-                    if Cache::caches(&task.config) && !task.config.foreground {
+                if let (Some(cache), Some(key)) = (cache, &key) {
+                    if cacheable && !task.config.foreground {
                         let _ = cache
-                            .put(&task.name, &task.config, &cwd, &output, duration)
+                            .put(&task.name, key, &task.config, &cwd, &output, duration)
                             .await;
                     }
                 }

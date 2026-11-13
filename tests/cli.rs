@@ -385,3 +385,47 @@ fn identical_tasks_in_two_projects_do_not_share_local_entries() {
     let out = run_yatr(b.path(), &["gate"]);
     assert!(!out.status.success(), "b was served a's cached pass");
 }
+
+/// The global `[env]`, declared ambient `env_inputs` and pinned toolchains
+/// are all inputs to the key, not just the task's own `env`.
+#[test]
+fn merged_and_declared_env_bust_the_key() {
+    let toml = |mode: &str| {
+        format!(
+            "[env]\nMODE = \"{mode}\"\n[tasks.show]\nshell = true\n\
+             run = [\"echo MODE=$MODE FOO=$FOO\"]\nsources = [\"input\"]\nenv_inputs = [\"FOO\"]\n"
+        )
+    };
+    let p = yatr_project(&toml("one"));
+    std::fs::write(p.path().join("input"), "").unwrap();
+    let run = |foo: &str| {
+        Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(p.path())
+            .env("FOO", foo)
+            .arg("show")
+            .output()
+            .unwrap()
+    };
+
+    assert!(!was_cached(&run("1")));
+    assert!(was_cached(&run("1")));
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a declared env input did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FOO=2"));
+
+    std::fs::write(
+        p.path().join("yatr.toml"),
+        format!("[settings]\ncache_dir = \".yatr/cache\"\n{}", toml("two")),
+    )
+    .unwrap();
+    let out = run("2");
+    assert!(
+        !was_cached(&out),
+        "a global [env] change did not bust the key"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("MODE=two"));
+}

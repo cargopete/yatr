@@ -10,6 +10,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Cached outputs keep their executable bit and symlinks on restore, and a hit no longer strips the mode of an output already on disk (#10).
 - Tasks without `sources` are no longer cached, and local cache entries are scoped to the project directory, so a key no longer collides across projects (#7).
+- The cache key covers the global `[env]` and pinned toolchain versions, and a new `env_inputs` task key names ambient variables that are cache inputs (#8).
 
 ## [1.1.0] — 2026-07-15
 

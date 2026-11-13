@@ -28,7 +28,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use crate::config::{CacheProtocol, TaskConfig};
+use crate::config::{CacheProtocol, Config, TaskConfig};
 use crate::error::{Result, YatrError};
 use crate::reapi;
 use crate::remote::RemoteCache;
@@ -157,29 +157,23 @@ impl Cache {
         !task.no_cache && !task.sources.is_empty()
     }
 
-    /// Look up a cached result for a task and, on a hit, restore its outputs.
+    /// Look up a cached result under `key` (from [`Cache::compute_key`]) and,
+    /// on a hit, restore its outputs.
     ///
     /// Returns `None` (a miss) when there is no entry, the entry is for a
     /// different task, or any recorded output blob is missing — in which case
     /// the caller should run the task for real.
-    pub async fn get(
-        &self,
-        task_name: &str,
-        config: &TaskConfig,
-        cwd: &Path,
-    ) -> Result<Option<String>> {
+    pub async fn get(&self, task_name: &str, key: &str, cwd: &Path) -> Result<Option<String>> {
         if !self.enabled {
             return Ok(None);
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
-
         // Local action cache first.
-        let result = if let Some(result) = self.load_local_ac(&key, task_name, cwd) {
+        let result = if let Some(result) = self.load_local_ac(key, task_name, cwd) {
             Some(result)
         } else {
             // Local miss: try the remote, populating the local cache on a hit.
-            self.fetch_from_remote(&key, task_name, cwd).await
+            self.fetch_from_remote(key, task_name, cwd).await
         };
 
         let Some(result) = result else {
@@ -296,6 +290,7 @@ impl Cache {
     pub async fn put(
         &self,
         task_name: &str,
+        key: &str,
         config: &TaskConfig,
         cwd: &Path,
         stdout: &str,
@@ -305,7 +300,7 @@ impl Cache {
             return Ok(());
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
+        let key = key.to_string();
         let outputs = self.capture_outputs(cwd, &config.outputs)?;
 
         let result = ActionResult {
@@ -501,13 +496,12 @@ impl Cache {
     /// Invalidate the cached entry for a specific task + input combination.
     // Async by design: a remote (REAPI) backend will perform network I/O here.
     #[allow(clippy::unused_async)]
-    pub async fn invalidate(&self, task_name: &str, config: &TaskConfig, cwd: &Path) -> Result<()> {
+    pub async fn invalidate(&self, key: &str, cwd: &Path) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
 
-        let key = Self::compute_key(task_name, config, cwd)?;
-        let ac_path = self.ac_path(&key, cwd);
+        let ac_path = self.ac_path(key, cwd);
         if ac_path.exists() {
             std::fs::remove_file(&ac_path)?;
         }
@@ -596,12 +590,20 @@ impl Cache {
         })
     }
 
-    /// Bumped when the shape of a stored entry changes, so entries written by
-    /// an older yatr are never served (v2: output modes and symlinks).
-    const KEY_VERSION: &'static [u8] = b"yatr-cache-v2";
+    /// Bumped when the shape of a stored entry or of the key changes, so
+    /// entries written by an older yatr are never served.
+    const KEY_VERSION: &'static [u8] = b"yatr-cache-v3";
 
-    /// Compute the cache key for a task.
-    fn compute_key(task_name: &str, config: &TaskConfig, cwd: &Path) -> Result<String> {
+    /// Compute the cache key for a task of `project`.
+    ///
+    /// The key is portable: it holds nothing machine-specific, so a remote
+    /// cache can share it. Local entries are scoped to `cwd` on top of it.
+    pub fn compute_key(
+        task_name: &str,
+        config: &TaskConfig,
+        project: &Config,
+        cwd: &Path,
+    ) -> Result<String> {
         let mut hasher = Hasher::new();
 
         hasher.update(Self::KEY_VERSION);
@@ -626,12 +628,48 @@ impl Cache {
         }
         hasher.update(&[u8::from(config.shell.unwrap_or(false))]);
 
-        // Environment variables (sorted for stability).
-        let mut env_pairs: Vec<_> = config.env.iter().collect();
+        // The environment the task runs with: global `[env]` merged with its
+        // own. Pinned toolchains put their bin dirs ahead of the ambient PATH,
+        // so that PATH is left out and the pins themselves stand in for it.
+        let env = project.task_env(config);
+        let injected_path = (!project.toolchain.is_empty())
+            .then(|| project.env.get("PATH"))
+            .flatten();
+        let mut env_pairs: Vec<_> = env
+            .iter()
+            .filter(|(k, v)| !(k.as_str() == "PATH" && Some(*v) == injected_path))
+            .collect();
         env_pairs.sort_by_key(|(k, _)| *k);
         for (k, v) in env_pairs {
-            hasher.update(k.as_bytes());
-            hasher.update(v.as_bytes());
+            Self::update_field(&mut hasher, k.as_bytes());
+            Self::update_field(&mut hasher, v.as_bytes());
+        }
+
+        let mut toolchains: Vec<_> = project.toolchain.iter().collect();
+        toolchains.sort_by_key(|(k, _)| *k);
+        for (name, tc) in toolchains {
+            for part in [
+                Some(name.as_str()),
+                Some(tc.version.as_str()),
+                Some(tc.url.as_str()),
+                tc.bin.as_deref(),
+                tc.sha256.as_deref(),
+            ] {
+                Self::update_field(&mut hasher, part.unwrap_or_default().as_bytes());
+            }
+        }
+
+        // Declared ambient inputs; unset hashes differently from empty.
+        let mut env_inputs = config.env_inputs.clone();
+        env_inputs.sort();
+        for name in &env_inputs {
+            Self::update_field(&mut hasher, name.as_bytes());
+            match std::env::var_os(name) {
+                Some(v) => Self::update_field(&mut hasher, v.as_encoded_bytes()),
+                None => {
+                    hasher.update(&[0xff]);
+                }
+            }
         }
 
         // Declared output patterns (sorted) — changing them changes the action.
@@ -648,6 +686,11 @@ impl Cache {
         }
 
         Ok(hasher.finalize().to_hex()[..16].to_string())
+    }
+
+    fn update_field(hasher: &mut Hasher, bytes: &[u8]) {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
     }
 
     /// Directories never walked when collecting sources, no matter what the
@@ -961,6 +1004,10 @@ impl std::fmt::Display for CacheStats {
 mod tests {
     use super::*;
 
+    fn key_of(name: &str, config: &TaskConfig, cwd: &Path) -> String {
+        Cache::compute_key(name, config, &Config::default(), cwd).unwrap()
+    }
+
     fn task_with(sources: &[&str], outputs: &[&str]) -> TaskConfig {
         let toml = format!(
             "run = [\"true\"]\nsources = [{}]\noutputs = [{}]\n",
@@ -988,6 +1035,7 @@ mod tests {
         cache
             .put(
                 "test",
+                &key_of("test", &config, work.path()),
                 &config,
                 work.path(),
                 "hello world",
@@ -996,7 +1044,10 @@ mod tests {
             .await
             .unwrap();
 
-        let output = cache.get("test", &config, work.path()).await.unwrap();
+        let output = cache
+            .get("test", &key_of("test", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(output, Some("hello world".to_string()));
     }
 
@@ -1015,6 +1066,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "built",
@@ -1027,7 +1079,10 @@ mod tests {
         std::fs::remove_dir_all(work.path().join("dist")).unwrap();
         assert!(!artifact.exists());
 
-        let output = cache.get("build", &config, work.path()).await.unwrap();
+        let output = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(output, Some("built".to_string()));
         assert!(
             artifact.exists(),
@@ -1047,17 +1102,33 @@ mod tests {
 
         let config = task_with(&["input.txt"], &[]);
         cache
-            .put("t", &config, work.path(), "out-v1", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "out-v1",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("out-v1".to_string())
         );
 
         // Mutating the source must change the key → miss.
         std::fs::write(&src, b"v2").unwrap();
-        assert_eq!(cache.get("t", &config, work.path()).await.unwrap(), None);
+        assert_eq!(
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     /// A `sources` glob under a dot-directory must be hashed like any other.
@@ -1075,17 +1146,30 @@ mod tests {
 
         let config = task_with(&[".config/f.json"], &[]);
         cache
-            .put("t", &config, work.path(), "out-v1", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "out-v1",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("out-v1".to_string())
         );
 
         std::fs::write(dir.join("f.json"), b"v2").unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             None,
             "changing a dot-path source must bust the key"
         );
@@ -1108,12 +1192,22 @@ mod tests {
 
         let config = task_with(&[".plugin/manifest.json"], &[]);
         cache
-            .put("manifest", &config, a.path(), "out-a", Duration::ZERO)
+            .put(
+                "manifest",
+                &key_of("manifest", &config, a.path()),
+                &config,
+                a.path(),
+                "out-a",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
         assert_eq!(
-            cache.get("manifest", &config, b.path()).await.unwrap(),
+            cache
+                .get("manifest", &key_of("manifest", &config, b.path()), b.path())
+                .await
+                .unwrap(),
             None,
             "project b must not be served project a's cached output"
         );
@@ -1134,6 +1228,25 @@ mod tests {
         let after = Cache::hash_sources(work.path(), &["**/*".to_string()]).unwrap();
 
         assert_eq!(before, after, "a change inside .git must not move the key");
+    }
+
+    /// A toolchain pin is a key input; the PATH yatr derives from it (which
+    /// also carries the ambient PATH) is not.
+    #[test]
+    fn test_toolchain_pin_is_a_key_input() {
+        let work = tempfile::tempdir().unwrap();
+        let task = task_with(&[], &[]);
+        let project = |version: &str, path: &str| -> Config {
+            toml::from_str(&format!(
+                "[env]\nPATH = \"{path}\"\n[toolchain.node]\nversion = \"{version}\"\nurl = \"https://example.com/{{version}}.tgz\"\n"
+            ))
+            .unwrap()
+        };
+        let key = |p: &Config| Cache::compute_key("t", &task, p, work.path()).unwrap();
+
+        let base = key(&project("26.11.1", "/tc/bin:/usr/bin"));
+        assert_ne!(base, key(&project("24.11.1", "/tc/bin:/usr/bin")));
+        assert_eq!(base, key(&project("26.11.1", "/tc/bin:/opt/homebrew/bin")));
     }
 
     /// Zero-match source patterns are the symptom `yatr check` should surface.
@@ -1162,18 +1275,41 @@ mod tests {
 
         let config = task_with(&[], &[]);
         cache
-            .put("a", &config, work.path(), "x", Duration::ZERO)
+            .put(
+                "a",
+                &key_of("a", &config, work.path()),
+                &config,
+                work.path(),
+                "x",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         cache
-            .put("b", &config, work.path(), "y", Duration::ZERO)
+            .put(
+                "b",
+                &key_of("b", &config, work.path()),
+                &config,
+                work.path(),
+                "y",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
         assert_eq!(cache.clear_task("a").unwrap(), 1);
-        assert_eq!(cache.get("a", &config, work.path()).await.unwrap(), None);
         assert_eq!(
-            cache.get("b", &config, work.path()).await.unwrap(),
+            cache
+                .get("a", &key_of("a", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            cache
+                .get("b", &key_of("b", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("y".to_string())
         );
     }
@@ -1199,7 +1335,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"remote-bytes").to_hex().to_string();
 
         let ac = SignedAc {
@@ -1238,7 +1374,10 @@ mod tests {
             .with_remote(Some(remote));
 
         // Local is empty; the hit must come from the remote and restore the output.
-        let out = cache.get("build", &config, work.path()).await.unwrap();
+        let out = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(out, Some("from-remote".to_string()));
         assert_eq!(
             std::fs::read(work.path().join("out.txt")).unwrap(),
@@ -1259,7 +1398,7 @@ mod tests {
 
         std::fs::write(work.path().join("artifact.bin"), b"payload").unwrap();
         let config = task_with(&[], &["artifact.bin"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"payload").to_hex().to_string();
 
         // Remote doesn't have the blob yet → expect an upload of blob + action.
@@ -1289,6 +1428,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "out",
@@ -1311,11 +1451,21 @@ mod tests {
 
         let config = task_with(&[], &[]);
         cache
-            .put("t", &config, work.path(), "signed-output", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "signed-output",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
         assert_eq!(
-            cache.get("t", &config, work.path()).await.unwrap(),
+            cache
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             Some("signed-output".to_string())
         );
     }
@@ -1330,7 +1480,14 @@ mod tests {
         Cache::new(Some(cache_dir.path().to_path_buf()))
             .unwrap()
             .with_signing_key(Some(Cache::derive_key("key-A")))
-            .put("t", &config, work.path(), "x", Duration::ZERO)
+            .put(
+                "t",
+                &key_of("t", &config, work.path()),
+                &config,
+                work.path(),
+                "x",
+                Duration::ZERO,
+            )
             .await
             .unwrap();
 
@@ -1338,7 +1495,13 @@ mod tests {
         let reader = Cache::new(Some(cache_dir.path().to_path_buf()))
             .unwrap()
             .with_signing_key(Some(Cache::derive_key("key-B")));
-        assert_eq!(reader.get("t", &config, work.path()).await.unwrap(), None);
+        assert_eq!(
+            reader
+                .get("t", &key_of("t", &config, work.path()), work.path())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1351,7 +1514,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let blob = blake3::hash(b"genuine").to_hex().to_string();
 
         let ac = SignedAc {
@@ -1392,7 +1555,10 @@ mod tests {
 
         // Integrity check must reject the tampered blob → miss, nothing restored.
         assert_eq!(
-            cache.get("build", &config, work.path()).await.unwrap(),
+            cache
+                .get("build", &key_of("build", &config, work.path()), work.path())
+                .await
+                .unwrap(),
             None
         );
         assert!(!work.path().join("out.txt").exists());
@@ -1408,7 +1574,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let config = task_with(&[], &["out.txt"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let content = b"reapi bytes";
         let digest = reapi::sha256_hex(content);
@@ -1445,7 +1611,10 @@ mod tests {
             .unwrap()
             .with_remote(Some(RemoteCache::from_config(&cfg).unwrap()));
 
-        let out = cache.get("build", &config, work.path()).await.unwrap();
+        let out = cache
+            .get("build", &key_of("build", &config, work.path()), work.path())
+            .await
+            .unwrap();
         assert_eq!(out, Some("from-reapi".to_string()));
         assert_eq!(std::fs::read(work.path().join("out.txt")).unwrap(), content);
     }
@@ -1461,7 +1630,7 @@ mod tests {
         std::fs::write(work.path().join("art.bin"), b"payload").unwrap();
 
         let config = task_with(&[], &["art.bin"]);
-        let key = Cache::compute_key("build", &config, work.path()).unwrap();
+        let key = key_of("build", &config, work.path());
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let digest = reapi::sha256_hex(b"payload");
 
@@ -1492,6 +1661,7 @@ mod tests {
         cache
             .put(
                 "build",
+                &key_of("build", &config, work.path()),
                 &config,
                 work.path(),
                 "out",
