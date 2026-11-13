@@ -7,7 +7,7 @@ Yet another task runner. But this one's actually good.
 ```
 yatr test          # Run tests
 yatr build         # Build with dependencies
-yatr --watch test  # Re-run on file changes
+yatr watch test    # Re-run on file changes
 ```
 
 A fast, single-binary, polyglot task runner with a cache that actually tells the
@@ -222,7 +222,7 @@ run = ["find src -name '*.rs' | wc -l"]
 Or per-invocation:
 
 ```bash
-yatr --shell run lines
+yatr run --shell lines   # or: yatr lines --shell
 ```
 
 ## CLI Reference
@@ -260,6 +260,7 @@ Options:
 yatr test                    # Run 'test' task
 yatr run test build          # Run multiple tasks
 yatr run --dry-run build     # Show plan without executing
+yatr build --dry-run         # Same: the bare form takes the `run` options
 yatr run --force build       # Ignore cache
 yatr run --parallel 4 test   # Limit parallelism
 yatr run --keep-going ci     # Let independent tasks finish after a failure

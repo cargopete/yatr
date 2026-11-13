@@ -365,21 +365,30 @@ impl Executor {
 
     /// Execute tasks according to the execution plan
     pub async fn execute(&self, graph: &TaskGraph, task_name: &str) -> Result<Vec<TaskResult>> {
+        self.execute_all(graph, &[task_name]).await
+    }
+
+    /// Execute several tasks as one graph, with one plan and one summary.
+    pub async fn execute_all<S: AsRef<str> + Sync>(
+        &self,
+        graph: &TaskGraph,
+        task_names: &[S],
+    ) -> Result<Vec<TaskResult>> {
         let mut results = Vec::new();
-        self.execute_into(graph, task_name, &mut results)
+        self.execute_into(graph, task_names, &mut results)
             .await
             .map(|()| results)
     }
 
-    /// As [`Executor::execute`], but results of tasks that finished before a
+    /// As [`Executor::execute_all`], but results of tasks that finished before a
     /// failure are kept in `all_results` rather than lost with the error.
-    pub async fn execute_into(
+    pub async fn execute_into<S: AsRef<str> + Sync>(
         &self,
         graph: &TaskGraph,
-        task_name: &str,
+        task_names: &[S],
         all_results: &mut Vec<TaskResult>,
     ) -> Result<()> {
-        let tasks = graph.execution_order(task_name)?;
+        let tasks = graph.execution_order_all(task_names)?;
 
         if self.exec_config.dry_run {
             if !self.exec_config.json {
@@ -710,12 +719,6 @@ impl Executor {
         cache: Option<&Cache>,
         run: TaskRun<'_>,
     ) -> Result<TaskResult> {
-        let TaskRun {
-            dep_keys,
-            fingerprints,
-            echo,
-            cancel,
-        } = run;
         let start = Instant::now();
         let start_offset = exec_config.run_start.elapsed();
         let env = config.task_env(&task.config);
@@ -728,11 +731,11 @@ impl Executor {
             .unwrap_or_else(|| exec_config.cwd.clone());
 
         let key = cache
-            .map(|_| Cache::compute_key(&task.name, &task.config, config, dep_keys, &cwd))
+            .map(|_| Cache::compute_key(&task.name, &task.config, config, run.dep_keys, &cwd))
             .transpose()?;
         let cacheable = Cache::caches(&task.config);
         let record_fingerprint =
-            || Self::record_fingerprint(fingerprints, task, key.as_deref(), &cwd);
+            || Self::record_fingerprint(run.fingerprints, task, key.as_deref(), &cwd);
 
         // Check cache
         if !exec_config.force {
@@ -740,7 +743,7 @@ impl Executor {
                 if cacheable {
                     if let Some(cached) = cache.get(&task.name, key, &cwd).await? {
                         record_fingerprint();
-                        if let Some(echo) = &echo {
+                        if let Some(echo) = &run.echo {
                             echo.replay(&cached);
                         }
                         return Ok(TaskResult {
@@ -773,9 +776,9 @@ impl Executor {
             task: task.name.clone(),
             sink: Sink {
                 capture: Capture::default(),
-                echo,
+                echo: run.echo,
             },
-            cancel,
+            cancel: run.cancel,
             shell: config.settings.shell.clone(),
             timeout: task.config.timeout,
             deadline: task

@@ -35,4 +35,5 @@ yatr --dry-run build # show the plan without executing
 yatr list            # list available tasks
 ```
 
-Bare task names are shorthand for `yatr run <task>`.
+Bare task names are shorthand for `yatr run <task>`, and take the same options
+either side of the names: `yatr build --dry-run` is `yatr run --dry-run build`.

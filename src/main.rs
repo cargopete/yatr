@@ -43,7 +43,7 @@ mod wasm;
 mod watch;
 
 use cache::Cache;
-use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat};
+use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat, RunArgs};
 use config::Config;
 use error::{Result, YatrError};
 use executor::{Executor, ExecutorConfig, TaskResult};
@@ -92,7 +92,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.effective_command() {
         EffectiveCommand::Subcommand(cmd) => run_command(cmd, &cli).await,
-        EffectiveCommand::RunTasks(tasks) => run_tasks(tasks, RunOpts::default(), &cli).await,
+        EffectiveCommand::RunTasks(tasks, opts) => run_tasks(tasks, opts, &cli).await,
         EffectiveCommand::None => {
             // No command - show help or list tasks
             let (config, _) = Config::load(cli.config.as_deref())?;
@@ -105,35 +105,13 @@ async fn run(cli: Cli) -> Result<()> {
 
 async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
     match cmd {
-        Commands::Run {
-            tasks,
-            dry_run,
-            force,
-            parallel,
-            shell,
-            json,
-            profile,
-            affected,
-            trace_io,
-            keep_going,
-        } => {
+        Commands::Run { tasks, opts } => {
             if tasks.is_empty() {
                 let (config, _) = Config::load(cli.config.as_deref())?;
                 let graph = TaskGraph::from_config(&config)?;
                 print_task_list(&graph, &config, &ListFormat::Table, false);
                 Ok(())
             } else {
-                let opts = RunOpts {
-                    dry_run: *dry_run,
-                    force: *force,
-                    parallel: *parallel,
-                    shell: *shell,
-                    json: *json,
-                    profile: profile.clone(),
-                    affected: affected.clone(),
-                    trace_io: *trace_io,
-                    keep_going: *keep_going,
-                };
                 run_tasks(tasks, opts, cli).await
             }
         }
@@ -329,23 +307,10 @@ fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result
     Ok(())
 }
 
-/// Options for a `run` invocation.
-#[derive(Default)]
-struct RunOpts {
-    dry_run: bool,
-    force: bool,
-    parallel: usize,
-    shell: bool,
-    json: bool,
-    profile: Option<std::path::PathBuf>,
-    affected: Option<String>,
-    trace_io: bool,
-    keep_going: bool,
-}
-
-async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
+async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     let (mut config, _) = Config::load(cli.config.as_deref())?;
     let graph = TaskGraph::from_config(&config)?;
+    graph.execution_order_all(tasks)?;
 
     // Ensure pinned toolchains are installed and put them on the task PATH.
     if !config.toolchain.is_empty() && !opts.dry_run {
@@ -428,15 +393,12 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     };
 
     let executor = Executor::new(config, exec_config, cache);
-
     let mut all_results = Vec::new();
-    let mut outcome = Ok(());
-    for task in tasks {
-        outcome = executor.execute_into(&graph, task, &mut all_results).await;
-        if outcome.is_err() {
-            break;
-        }
-    }
+    let outcome = if tasks.is_empty() {
+        Ok(())
+    } else {
+        executor.execute_into(&graph, tasks, &mut all_results).await
+    };
 
     if opts.json {
         print_run_json(&all_results)?;

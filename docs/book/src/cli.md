@@ -31,6 +31,11 @@ yatr run [TASKS]... [OPTIONS]
   -k, --keep-going     After a failure, let tasks that do not depend on it finish
 ```
 
+The bare form `yatr [OPTIONS] [TASKS]...` is shorthand for `yatr run` and takes
+the same options, before or after the task names. Every name is checked before
+anything runs, and several names are planned as one graph, so a shared
+dependency runs once.
+
 ## Global options
 
 ```bash

@@ -19,6 +19,9 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The task `timeout` field is enforced for `run` commands; a task over time is killed and exits 124 (#16).
 - `[settings] shell` and `[settings] parallelism` are honoured; `--parallel` still overrides the latter (#17).
 - Reporting: the summary gives wall time and says "1 task", `graph` and `--dry-run` print in a stable order with dependencies as declared, the dry-run plan names each task with its `cwd`, `env` and indented multi-line commands, and a `run = []` aggregate is no longer counted or shown as cached (#23).
+- Run options after a bare task name (`yatr deploy --dry-run`) are now options, not task names, and every requested name is validated before anything runs (#13).
+- `yatr run a b` plans one graph across all named tasks: shared dependencies run once, independent tasks run in parallel, one summary (#14).
+- The bare form now accepts the `run` options (`yatr --dry-run build`); README and book no longer document the non-existent `yatr --watch` and `yatr --shell run`, and the `cache_dir` doc names the real default (#15).
 
 ## [1.1.1] - 2026-11-13
 

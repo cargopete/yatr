@@ -79,30 +79,34 @@ impl TaskGraph {
 
     /// Get execution order for a specific task (including dependencies)
     pub fn execution_order(&self, task_name: &str) -> Result<Vec<&TaskNode>> {
-        let target_idx =
-            self.name_to_index
-                .get(task_name)
-                .ok_or_else(|| YatrError::TaskNotFound {
-                    name: task_name.to_string(),
-                    available: self.name_to_index.keys().cloned().collect(),
-                })?;
+        self.execution_order_all(&[task_name])
+    }
 
-        // Get all ancestors (dependencies) of the target task
-        let required_nodes = self.get_ancestors(*target_idx);
+    /// Execution order for several tasks as one graph: shared dependencies
+    /// appear once. Every name is checked before anything is returned.
+    pub fn execution_order_all<S: AsRef<str>>(&self, task_names: &[S]) -> Result<Vec<&TaskNode>> {
+        let mut required_nodes = std::collections::HashSet::new();
+        for name in task_names {
+            let name = name.as_ref();
+            let target_idx =
+                self.name_to_index
+                    .get(name)
+                    .ok_or_else(|| YatrError::TaskNotFound {
+                        name: name.to_string(),
+                        available: self.name_to_index.keys().cloned().collect(),
+                    })?;
+            required_nodes.extend(self.get_ancestors(*target_idx));
+        }
 
-        // Topological sort of the subgraph
         let sorted = toposort(&self.graph, None).map_err(|_| YatrError::CyclicDependency {
             cycle: "Unknown cycle detected".to_string(),
         })?;
 
-        // Filter to only include required nodes, maintaining order
-        let execution_order: Vec<&TaskNode> = sorted
+        Ok(sorted
             .into_iter()
             .filter(|idx| required_nodes.contains(idx))
             .map(|idx| &self.graph[idx])
-            .collect();
-
-        Ok(execution_order)
+            .collect())
     }
 
     /// Get all tasks in dependency order
