@@ -279,3 +279,61 @@ fn check_validates_files_and_warns() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("warning:"), "expected a warning: {stdout}");
 }
+
+fn run_yatr(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// A cache hit must restore outputs with their mode and symlinks intact, and
+/// must not strip the executable bit from an output that is already present.
+#[cfg(unix)]
+#[test]
+fn cache_hit_restores_exec_bit_and_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    std::fs::write(
+        p.join("yatr.toml"),
+        "[settings]\ncache_dir = \".yatr/cache\"\n\
+         [tasks.mk]\nshell = true\n\
+         run = [\"mkdir -p out && printf '#!/bin/sh\\\\necho hi\\\\n' > out/tool && chmod +x out/tool && ln -sf tool out/link\"]\n\
+         sources = [\"yatr.toml\"]\noutputs = [\"out\"]\n\
+         [tasks.mkglob]\nshell = true\n\
+         run = [\"mkdir -p g && printf x > g/f && ln -sf f g/link\"]\n\
+         sources = [\"yatr.toml\"]\noutputs = [\"g/*\"]\n",
+    )
+    .unwrap();
+    let mode = |rel: &str| std::fs::metadata(p.join(rel)).unwrap().permissions().mode() & 0o777;
+
+    assert!(run_yatr(p, &["mk"]).status.success());
+    // Second run is a hit over the existing outputs.
+    let out = run_yatr(p, &["mk"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert_eq!(mode("out/tool"), 0o755, "a hit clobbered the exec bit");
+
+    std::fs::remove_dir_all(p.join("out")).unwrap();
+    let out = run_yatr(p, &["mk"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("✓ cached"));
+    assert_eq!(mode("out/tool"), 0o755, "restored without its exec bit");
+    let link = p.join("out/link");
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        std::path::Path::new("tool")
+    );
+
+    assert!(run_yatr(p, &["mkglob"]).status.success());
+    std::fs::remove_dir_all(p.join("g")).unwrap();
+    assert!(run_yatr(p, &["mkglob"]).status.success());
+    let link = p.join("g/link");
+    assert!(
+        link.symlink_metadata().unwrap().file_type().is_symlink(),
+        "a globbed symlink came back as a regular file"
+    );
+}

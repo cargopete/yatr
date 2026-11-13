@@ -39,6 +39,12 @@ use crate::remote::RemoteCache;
 pub struct OutputEntry {
     pub path: String,
     pub blob: String,
+    /// Unix permission bits, restored on a hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    /// The output is a symlink and the blob holds its target, not contents.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub symlink: bool,
 }
 
 /// The result of executing a task, stored in the action cache.
@@ -378,13 +384,21 @@ impl Cache {
     ) {
         let ac_key = reapi::sha256_hex(key.as_bytes());
         let mut files = Vec::new();
+        let mut symlinks = Vec::new();
         for entry in &result.outputs {
             let Ok(bytes) = std::fs::read(self.cas_path(&entry.blob)) else {
                 return;
             };
+            if entry.symlink {
+                symlinks.push(reapi::OutputSymlink {
+                    path: entry.path.clone(),
+                    target: String::from_utf8_lossy(&bytes).into_owned(),
+                });
+                continue;
+            }
             let digest = reapi::sha256_hex(&bytes);
             let size = bytes.len() as u64;
-            let executable = Self::is_executable(&cwd.join(&entry.path));
+            let executable = entry.mode.is_some_and(|m| m & 0o111 != 0);
             if !remote.has_cas(&digest).await.unwrap_or(false) {
                 if let Err(e) = remote.put_cas(&digest, bytes).await {
                     tracing::warn!("reapi blob upload failed: {e}");
@@ -400,6 +414,7 @@ impl Cache {
         }
         let ar = reapi::ActionResult {
             output_files: files,
+            output_symlinks: symlinks,
             exit_code: 0,
             stdout: result.stdout.clone().into_bytes(),
         };
@@ -442,6 +457,15 @@ impl Cache {
                 Self::set_executable(&dest);
             }
         }
+        for l in &ar.output_symlinks {
+            let dest = cwd.join(&l.path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).ok()?;
+            }
+            let tmp = Self::tmp_path(&dest);
+            Self::make_symlink(&l.target, &tmp).ok()?;
+            std::fs::rename(&tmp, &dest).ok()?;
+        }
 
         Some(ActionResult {
             key: key.to_string(),
@@ -452,17 +476,6 @@ impl Cache {
             stdout: String::from_utf8_lossy(&ar.stdout).into_owned(),
             outputs: Vec::new(),
         })
-    }
-
-    #[cfg(unix)]
-    fn is_executable(path: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-    }
-
-    #[cfg(not(unix))]
-    fn is_executable(_path: &Path) -> bool {
-        false
     }
 
     #[cfg(unix)]
@@ -576,10 +589,15 @@ impl Cache {
         })
     }
 
+    /// Bumped when the shape of a stored entry changes, so entries written by
+    /// an older yatr are never served (v2: output modes and symlinks).
+    const KEY_VERSION: &'static [u8] = b"yatr-cache-v2";
+
     /// Compute the cache key for a task.
     fn compute_key(task_name: &str, config: &TaskConfig, cwd: &Path) -> Result<String> {
         let mut hasher = Hasher::new();
 
+        hasher.update(Self::KEY_VERSION);
         hasher.update(task_name.as_bytes());
 
         for cmd in &config.run {
@@ -723,11 +741,20 @@ impl Cache {
             let Ok(rel) = path.strip_prefix(cwd) else {
                 continue;
             };
-            let content = std::fs::read(&path)?;
+            let meta = std::fs::symlink_metadata(&path)?;
+            let symlink = cfg!(unix) && meta.file_type().is_symlink();
+            let (content, mode) = if symlink {
+                let target = std::fs::read_link(&path)?;
+                (target.to_string_lossy().into_owned().into_bytes(), None)
+            } else {
+                (std::fs::read(&path)?, Self::mode_of(&meta))
+            };
             let blob = self.store_blob(&content)?;
             entries.push(OutputEntry {
                 path: rel.to_string_lossy().into_owned(),
                 blob,
+                mode,
+                symlink,
             });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -737,25 +764,78 @@ impl Cache {
     /// Restore captured outputs to disk. Returns `false` if any blob is
     /// missing, signalling an incomplete (unusable) cache entry.
     fn restore_outputs(&self, cwd: &Path, outputs: &[OutputEntry]) -> Result<bool> {
+        if outputs.iter().any(|e| !self.cas_path(&e.blob).exists()) {
+            return Ok(false);
+        }
         for entry in outputs {
             let blob_path = self.cas_path(&entry.blob);
-            if !blob_path.exists() {
-                return Ok(false);
-            }
             let dest = cwd.join(&entry.path);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&blob_path, &dest)?;
+            // Built beside the destination and renamed over it, so an existing
+            // output is replaced rather than written through (a symlink, or a
+            // binary that is running).
+            let tmp = Self::tmp_path(&dest);
+            if entry.symlink {
+                Self::make_symlink(&std::fs::read_to_string(&blob_path)?, &tmp)?;
+            } else {
+                std::fs::copy(&blob_path, &tmp)?;
+                if let Some(mode) = entry.mode {
+                    Self::set_mode(&tmp, mode)?;
+                }
+            }
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.into());
+            }
         }
         Ok(true)
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::unnecessary_wraps)] // `None` off unix
+    fn mode_of(meta: &std::fs::Metadata) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o7777)
+    }
+
+    #[cfg(not(unix))]
+    const fn mode_of(_meta: &std::fs::Metadata) -> Option<u32> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn make_symlink(target: &str, link: &Path) -> Result<()> {
+        std::os::unix::fs::symlink(target, link)?;
+        Ok(())
+    }
+
+    // Symlinks are only captured on unix; an entry from a unix remote lands as a copy.
+    #[cfg(not(unix))]
+    fn make_symlink(target: &str, link: &Path) -> Result<()> {
+        let src = link.parent().unwrap_or(Path::new(".")).join(target);
+        std::fs::copy(src, link)?;
+        Ok(())
     }
 
     /// Enumerate the concrete files produced by a set of output patterns.
     ///
     /// Unlike source hashing this does **not** consult `.gitignore` — declared
     /// outputs (`target/`, `dist/`, …) are routinely gitignored and must still
-    /// be captured.
+    /// be captured. Symlinks below a declared output are kept as symlinks.
     fn collect_output_files(cwd: &Path, patterns: &[String]) -> Vec<PathBuf> {
         fn walk_dir_files(root: &Path, out: &mut Vec<PathBuf>) {
             for entry in WalkDir::new(root)
@@ -763,7 +843,8 @@ impl Cache {
                 .into_iter()
                 .filter_map(std::result::Result::ok)
             {
-                if entry.file_type().is_file() {
+                let ft = entry.file_type();
+                if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
                     out.push(entry.into_path());
                 }
             }
@@ -776,7 +857,9 @@ impl Cache {
                 walk_dir_files(&full, &mut files);
             } else if let Ok(paths) = glob::glob(&full.to_string_lossy()) {
                 for p in paths.filter_map(std::result::Result::ok) {
-                    if p.is_dir() {
+                    if cfg!(unix) && p.is_symlink() {
+                        files.push(p);
+                    } else if p.is_dir() {
                         walk_dir_files(&p, &mut files);
                     } else if p.is_file() {
                         files.push(p);
@@ -804,13 +887,17 @@ impl Cache {
     /// unique per call (pid + counter) so concurrent writers of the same target
     /// don't collide on the temp file.
     fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp.{}.{n}", std::process::id()));
+        let tmp = Self::tmp_path(path);
         std::fs::write(&tmp, content)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    fn tmp_path(path: &Path) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.with_extension(format!("tmp.{}.{n}", std::process::id()))
     }
 
     /// Path for an action-cache entry.
@@ -1113,6 +1200,8 @@ mod tests {
                 outputs: vec![OutputEntry {
                     path: "out.txt".into(),
                     blob: blob.clone(),
+                    mode: None,
+                    symlink: false,
                 }],
             },
         };
@@ -1263,6 +1352,8 @@ mod tests {
                 outputs: vec![OutputEntry {
                     path: "out.txt".into(),
                     blob: blob.clone(),
+                    mode: None,
+                    symlink: false,
                 }],
             },
         };
@@ -1316,6 +1407,7 @@ mod tests {
                 size: content.len() as u64,
                 executable: false,
             }],
+            output_symlinks: vec![],
             exit_code: 0,
             stdout: b"from-reapi".to_vec(),
         };
