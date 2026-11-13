@@ -430,13 +430,101 @@ impl Config {
         self.tasks.keys().map(std::string::String::as_str).collect()
     }
 
-    /// Merge environment variables for a task (global + task-specific)
+    /// Merge environment variables for a task (global + task-specific).
+    ///
+    /// Values expand `$VAR` and `${VAR}` (`$$` is a literal `$`). Global values
+    /// see the process environment; task values also see the global ones.
     #[must_use]
     pub fn task_env(&self, task: &TaskConfig) -> HashMap<String, String> {
-        let mut env = self.env.clone();
-        env.extend(task.env.clone());
+        let process = |name: &str| std::env::var(name).ok();
+        let mut env: HashMap<String, String> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), expand_vars(v, &process)))
+            .collect();
+        let expanded: Vec<(String, String)> = task
+            .env
+            .iter()
+            .map(|(k, v)| {
+                let lookup = |name: &str| env.get(name).cloned().or_else(|| process(name));
+                (k.clone(), expand_vars(v, &lookup))
+            })
+            .collect();
+        env.extend(expanded);
         env
     }
+}
+
+/// Expand `$NAME` and `${NAME}` in `value` via `lookup`; unset names expand
+/// to nothing, as in `sh`. `$$` is a literal `$`, as is a `$` that starts no name.
+pub fn expand_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let is_name = |c: char| c == '_' || c.is_ascii_alphanumeric();
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if let Some(tail) = after.strip_prefix('$') {
+            out.push('$');
+            rest = tail;
+        } else if let Some(braced) = after.strip_prefix('{') {
+            match braced.find('}') {
+                Some(end) if end > 0 && braced[..end].chars().all(is_name) => {
+                    out.push_str(&lookup(&braced[..end]).unwrap_or_default());
+                    rest = &braced[end + 1..];
+                }
+                _ => {
+                    out.push('$');
+                    rest = after;
+                }
+            }
+        } else {
+            let len = after
+                .char_indices()
+                .find(|&(j, c)| !(is_name(c) && (j > 0 || !c.is_ascii_digit())))
+                .map_or(after.len(), |(j, _)| j);
+            if len == 0 {
+                out.push('$');
+            } else {
+                out.push_str(&lookup(&after[..len]).unwrap_or_default());
+            }
+            rest = &after[len..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The first shell-only construct in `cmd`: redirection, pipe, chaining or expansion.
+///
+/// `$` and backticks still expand inside double quotes in a shell, so they
+/// count there too; nothing counts inside single quotes.
+#[must_use]
+pub fn shell_syntax(cmd: &str) -> Option<&'static str> {
+    let mut quote: Option<char> = None;
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('\''), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (_, '$')
+                if chars
+                    .peek()
+                    .is_some_and(|n| n.is_ascii_alphabetic() || matches!(n, '_' | '{' | '(')) =>
+            {
+                return Some("$");
+            }
+            (_, '`') => return Some("`"),
+            (None, '|') => return Some("|"),
+            (None, '>') => return Some(">"),
+            (None, '<') => return Some("<"),
+            (None, ';') => return Some(";"),
+            (None, '&') if chars.peek() == Some(&'&') => return Some("&&"),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -556,5 +644,46 @@ mod tests {
         .unwrap();
 
         assert!(Config::load(Some(&dir.path().join("a.toml"))).is_err());
+    }
+
+    #[test]
+    fn env_values_expand_variables() {
+        let lookup = |name: &str| match name {
+            "HOME" => Some("/home/me".to_string()),
+            "PATH" => Some("/usr/bin".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_vars("${HOME}/x", &lookup), "/home/me/x");
+        assert_eq!(
+            expand_vars("$HOME/bin:$PATH", &lookup),
+            "/home/me/bin:/usr/bin"
+        );
+        assert_eq!(expand_vars("a$UNSET-b", &lookup), "a-b");
+        assert_eq!(expand_vars("cost $$5 $ ${", &lookup), "cost $5 $ ${");
+        assert_eq!(expand_vars("$1x", &lookup), "$1x");
+    }
+
+    #[test]
+    fn task_env_sees_global_env() {
+        let config: Config = toml::from_str(
+            "[env]\nBASE = \"/opt\"\n[tasks.t]\nrun = [\"x\"]\nenv = { TOOL = \"${BASE}/tool\" }\n",
+        )
+        .unwrap();
+        let env = config.task_env(&config.tasks["t"]);
+        assert_eq!(env["TOOL"], "/opt/tool");
+    }
+
+    #[test]
+    fn detects_shell_syntax_outside_single_quotes() {
+        assert_eq!(shell_syntax("echo hi > f.txt"), Some(">"));
+        assert_eq!(shell_syntax("echo a | tr a b"), Some("|"));
+        assert_eq!(shell_syntax("make && make install"), Some("&&"));
+        assert_eq!(shell_syntax("a; b"), Some(";"));
+        assert_eq!(shell_syntax("echo $HOME"), Some("$"));
+        assert_eq!(shell_syntax("echo \"$HOME\""), Some("$"));
+        assert_eq!(shell_syntax("grep 'a|b$x' f"), None);
+        assert_eq!(shell_syntax("echo \"a > b\""), None);
+        assert_eq!(shell_syntax("cargo test -- --exact"), None);
+        assert_eq!(shell_syntax("echo $5"), None);
     }
 }

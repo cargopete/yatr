@@ -130,6 +130,10 @@ env = { RUST_BACKTRACE = "1" }
 run = ["cargo test"]
 ```
 
+Values expand `$VAR` and `${VAR}`: global values from the process environment,
+task values from that plus the global `[env]`, so `PATH = "${HOME}/bin:${PATH}"`
+works. An unset name expands to nothing; write `$$` for a literal `$`.
+
 ### Rhai Scripting
 
 For complex logic, use inline Rhai scripts:

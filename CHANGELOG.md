@@ -28,6 +28,11 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `yatr watch`: patterns are matched relative to the task's `cwd` (relative patterns never fired), dependencies' patterns are watched, `[toolchain]` pins are applied, and `--clear` clears the screen (#20).
 - `yatr affected` diffs from the ref's merge-base to the working tree, counts untracked files, treats a task whose definition changed in `yatr.toml` as affected, matches `sources` against the task's `cwd`, and no longer treats aggregates as always affected; `run --affected` also skips unaffected dependencies (#21).
 
+### Added
+
+- `env` values expand `$VAR` and `${VAR}` (`$$` for a literal `$`), so a task can extend `PATH` (#24).
+- `yatr check` warns on shell syntax in a command without `shell = true`, and on a cached task with no `sources` (#24).
+
 ## [1.1.1] - 2026-11-13
 
 ### Fixed

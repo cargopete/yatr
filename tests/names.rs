@@ -49,7 +49,7 @@ fn init_writes_a_config_that_yatr_finds() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("warning:"),
+        !stdout.contains("runs the builtin subcommand"),
         "the template should not shadow a builtin: {stdout}"
     );
 

@@ -914,3 +914,74 @@ fn gitignore_is_honoured_outside_git() {
         "an ignored file busted the key"
     );
 }
+
+fn check_stdout(config: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("yatr.toml"), config).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("check")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Regression (#24): shell syntax in a non-shell command is passed literally.
+#[test]
+fn check_warns_on_shell_syntax_without_shell() {
+    let stdout = check_stdout(
+        "[tasks.t]\nno_cache = true\nrun = [\"echo hi > f.txt\", \"echo a | tr a b\", \"echo $HOME\"]\n\
+         [tasks.s]\nno_cache = true\nshell = true\nrun = [\"echo hi > f.txt\"]\n",
+    );
+    for syntax in ["(`>`)", "(`|`)", "(`$`)"] {
+        assert!(stdout.contains(syntax), "missing {syntax}: {stdout}");
+    }
+    assert!(!stdout.contains("task 's'"), "{stdout}");
+}
+
+/// Regression (#24): a cached task without `sources` never sees its inputs change.
+#[test]
+fn check_warns_on_cached_task_without_sources() {
+    let stdout = check_stdout(
+        "[tasks.install]\nrun = [\"npm ci\"]\n\
+         [tasks.ok]\nrun = [\"echo\"]\nsources = [\"a.txt\"]\n\
+         [tasks.always]\nrun = [\"echo\"]\nno_cache = true\n\
+         [tasks.ci]\ndepends = [\"ok\"]\nrun = []\n",
+    );
+    assert!(
+        stdout.contains("task 'install': declares no `sources`"),
+        "{stdout}"
+    );
+    for quiet in ["'ok'", "'always'", "'ci'"] {
+        assert!(!stdout.contains(quiet), "{quiet} warned: {stdout}");
+    }
+}
+
+/// Regression (#24): `env` values expand `$VAR`, so a task can extend `PATH`.
+#[cfg(unix)]
+#[test]
+fn env_values_expand_variables() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[settings]\ncache = false\n[env]\nBASE = \"${YATR_TEST_BASE}/x\"\n\
+         [tasks.t]\nrun = [\"printenv WHERE\"]\nenv = { WHERE = \"$BASE:$$\" }\n",
+    )
+    .unwrap();
+    let out = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("YATR_TEST_BASE", "/base")
+        .args(["run", "--json", "t"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json["tasks"][0]["output"].as_str().unwrap().trim(),
+        "/base/x:$"
+    );
+}

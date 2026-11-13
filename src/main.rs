@@ -174,77 +174,8 @@ fn run_check_command(cli: &Cli) -> Result<()> {
 
     let builtins = cli::builtin_names();
     for name in graph.task_names() {
-        let Some(task) = config.get_task(name) else {
-            continue;
-        };
-        if builtins.iter().any(|b| b == name) {
-            warnings.push(format!(
-                "task '{name}': `yatr {name}` runs the builtin subcommand, not this task; \
-                 use `yatr run {name}` or rename it"
-            ));
-        }
-        let base = task.working_dir().unwrap_or_else(|| ".".into());
-
-        // Referenced paths must exist.
-        if task.cwd.is_some() && !base.is_dir() {
-            errors.push(format!(
-                "task '{name}': cwd '{}' does not exist",
-                base.display()
-            ));
-        }
-        if let Some(wasm) = &task.wasm {
-            let wasm_str = wasm.to_string_lossy();
-            if !wasm::is_remote_ref(&wasm_str) {
-                let resolved = if wasm.is_absolute() {
-                    wasm.clone()
-                } else {
-                    base.join(wasm)
-                };
-                if !resolved.is_file() {
-                    errors.push(format!(
-                        "task '{name}': wasm plugin '{}' not found",
-                        resolved.display()
-                    ));
-                }
-            }
-        }
-
-        // Config smells worth a nudge.
-        if !task.outputs.is_empty() && task.no_cache {
-            warnings.push(format!(
-                "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
-            ));
-        }
-        if !task.outputs.is_empty() && task.sources.is_empty() && !task.no_cache {
-            warnings.push(format!(
-                "task '{name}': declares `outputs` but no `sources` — a task without sources is never cached"
-            ));
-        }
-        // A `sources` pattern matching nothing contributes nothing to the
-        // cache key, so the task silently stops invalidating. Nearly always a
-        // typo or a path that moved.
-        if !task.sources.is_empty() && !task.no_cache {
-            match Cache::unmatched_source_patterns(&base, &task.sources) {
-                Ok(unmatched) if !unmatched.is_empty() => {
-                    warnings.push(format!(
-                        "task '{name}': sources pattern(s) match no files: {}. \
-                         They contribute nothing to the cache key, so the task \
-                         will not re-run when they change",
-                        unmatched.join(", ")
-                    ));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warnings.push(format!("task '{name}': could not check sources: {e}"));
-                }
-            }
-        }
-
-        if task.foreground && task.run.len() > 1 {
-            warnings.push(format!(
-                "task '{name}': foreground tasks only run their first command ({} given)",
-                task.run.len()
-            ));
+        if let Some(task) = config.get_task(name) {
+            check_task(name, task, &config, &builtins, &mut errors, &mut warnings);
         }
     }
 
@@ -272,6 +203,109 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         Err(YatrError::InvalidConfig {
             message: format!("{} problem(s) found in {}", errors.len(), path.display()),
         })
+    }
+}
+
+/// The per-task checks behind `yatr check`.
+fn check_task(
+    name: &str,
+    task: &config::TaskConfig,
+    config: &Config,
+    builtins: &[String],
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    if builtins.iter().any(|b| b == name) {
+        warnings.push(format!(
+            "task '{name}': `yatr {name}` runs the builtin subcommand, not this task; \
+             use `yatr run {name}` or rename it"
+        ));
+    }
+    let base = task.working_dir().unwrap_or_else(|| ".".into());
+
+    // Referenced paths must exist.
+    if task.cwd.is_some() && !base.is_dir() {
+        errors.push(format!(
+            "task '{name}': cwd '{}' does not exist",
+            base.display()
+        ));
+    }
+    if let Some(wasm) = &task.wasm {
+        let wasm_str = wasm.to_string_lossy();
+        if !wasm::is_remote_ref(&wasm_str) {
+            let resolved = if wasm.is_absolute() {
+                wasm.clone()
+            } else {
+                base.join(wasm)
+            };
+            if !resolved.is_file() {
+                errors.push(format!(
+                    "task '{name}': wasm plugin '{}' not found",
+                    resolved.display()
+                ));
+            }
+        }
+    }
+
+    // Config smells worth a nudge.
+    if !task.outputs.is_empty() && task.no_cache {
+        warnings.push(format!(
+            "task '{name}': declares `outputs` but `no_cache = true` — outputs won't be cached"
+        ));
+    }
+    if !task.outputs.is_empty() && task.sources.is_empty() && !task.no_cache {
+        warnings.push(format!(
+            "task '{name}': declares `outputs` but no `sources` — a task without sources is never cached"
+        ));
+    }
+    // A `sources` pattern matching nothing contributes nothing to the
+    // cache key, so the task silently stops invalidating. Nearly always a
+    // typo or a path that moved.
+    if !task.sources.is_empty() && !task.no_cache {
+        match Cache::unmatched_source_patterns(&base, &task.sources) {
+            Ok(unmatched) if !unmatched.is_empty() => {
+                warnings.push(format!(
+                    "task '{name}': sources pattern(s) match no files: {}. \
+                     They contribute nothing to the cache key, so the task \
+                     will not re-run when they change",
+                    unmatched.join(", ")
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warnings.push(format!("task '{name}': could not check sources: {e}"));
+            }
+        }
+    }
+
+    if !task.shell.unwrap_or(false) {
+        for cmd in &task.run {
+            if let Some(syntax) = config::shell_syntax(cmd) {
+                warnings.push(format!(
+                    "task '{name}': `{cmd}` uses shell syntax (`{syntax}`) but the task \
+                     does not set `shell = true`, so it is passed to the program literally"
+                ));
+            }
+        }
+    }
+    let has_commands = !task.run.is_empty() || task.script.is_some() || task.wasm.is_some();
+    if config.settings.cache
+        && has_commands
+        && task.sources.is_empty()
+        && !task.no_cache
+        && !task.foreground
+    {
+        warnings.push(format!(
+            "task '{name}': declares no `sources`, so yatr cannot tell when its inputs \
+             change. Declare `sources`, or set `no_cache = true` if it should always run"
+        ));
+    }
+
+    if task.foreground && task.run.len() > 1 {
+        warnings.push(format!(
+            "task '{name}': foreground tasks only run their first command ({} given)",
+            task.run.len()
+        ));
     }
 }
 
@@ -722,14 +756,17 @@ fn init_config(force: bool) -> Result<()> {
 [tasks.fmt]
 desc = "Format code"
 run = ["cargo fmt"]
+no_cache = true             # rewrites files, so always run it
 
 [tasks.lint]
 desc = "Run clippy"
 run = ["cargo clippy -- -D warnings"]
+sources = ["**/*.rs", "Cargo.*"]
 
 [tasks.test]
 desc = "Run tests"
 run = ["cargo test"]
+sources = ["**/*.rs", "Cargo.*"]
 
 [tasks.ci]
 desc = "Format, lint, and test"
@@ -740,6 +777,7 @@ run = []
 desc = "Build release binary"
 depends = ["ci"]
 run = ["cargo build --release"]
+sources = ["**/*.rs", "Cargo.*"]
 "#;
 
     std::fs::write(path, template)?;
