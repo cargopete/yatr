@@ -15,6 +15,23 @@ env_inputs = ["CLANG", "PATH"]   # a different compiler on PATH busts the key
 run = ["./build.sh"]
 ```
 
+A tool's version is not an input by default: a task keys on the command string,
+not on which binary it resolves to. Name a command in `tool_inputs` and its
+stdout joins the key, so upgrading the tool re-runs the task:
+
+```toml
+[tasks.drift]
+sources = ["nuthatch.toml", "schema/**"]
+tool_inputs = ["nuthatch --version"]
+run = ["nuthatch schema", "git diff --exit-code"]
+```
+
+Each command runs directly, not through a shell, in the task's directory and
+environment (so a pinned `[toolchain]` is on `PATH`). It runs once per yatr
+invocation however many tasks name it, and a command that fails stops the run.
+Only the command string and its stdout are hashed, never the binary's path, so
+keys stay portable to a remote cache.
+
 A task's key also folds in the keys of its `depends`, so a dependent re-runs
 whenever a dependency's inputs change. A dependency that is not cached
 contributes the contents of its declared `outputs` as well.

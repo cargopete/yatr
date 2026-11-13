@@ -291,6 +291,14 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "tool_inputs": {
+          "description": "Commands whose stdout is a cache input, such as `nuthatch --version`. Each runs directly, not through a shell, in the task's directory and environment, once per yatr invocation.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "wasm": {
           "description": "WASM plugin to run for this task (alternative to `run`/`script`). Path is relative to the task's working directory.",
           "default": null,

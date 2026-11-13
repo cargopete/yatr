@@ -43,6 +43,11 @@ pub struct Config {
     #[serde(skip)]
     #[schemars(skip)]
     pub toolchain_bins: Vec<PathBuf>,
+
+    /// Outputs of `tool_inputs` commands, run once per invocation.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub tool_outputs: std::sync::Arc<crate::cache::ToolOutputs>,
 }
 
 /// A pinned, auto-downloaded language toolchain.
@@ -209,6 +214,12 @@ pub struct TaskConfig {
     /// Names of ambient environment variables whose values are cache inputs
     #[serde(default)]
     pub env_inputs: Vec<String>,
+
+    /// Commands whose stdout is a cache input, such as `nuthatch --version`.
+    /// Each runs directly, not through a shell, in the task's directory and
+    /// environment, once per yatr invocation.
+    #[serde(default)]
+    pub tool_inputs: Vec<String>,
 
     /// Working directory for this task
     #[serde(default)]
@@ -480,8 +491,9 @@ impl Config {
     }
 }
 
-/// Expand `$NAME`, `${NAME}`, `${NAME:-default}` and `${NAME-default}` in
-/// `value` via `lookup`, as in `sh`: unset names expand to nothing, `:-` takes
+/// Expand `$NAME`, `${NAME}`, `${NAME:-default}` and `${NAME-default}` in `value`.
+///
+/// Names resolve via `lookup`, as in `sh`: unset names expand to nothing, `:-` takes
 /// the default when the name is unset or empty, `-` only when unset. `$$` is a
 /// literal `$`, as is a `$` that starts no name; any other `${...}` is kept as is.
 pub fn expand_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
@@ -784,6 +796,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn unsupported_expansions_are_reported() {
         assert!(unsupported_expansions("${A} ${A:-x} ${A-x} $$ ${").is_empty());
         assert_eq!(
@@ -793,6 +806,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn global_env_default_is_overridable() {
         let config: Config = toml::from_str(
             "[env]\nYATR_T45 = \"${YATR_T45:-fallback}\"\n[tasks.t]\nrun = [\"x\"]\n",

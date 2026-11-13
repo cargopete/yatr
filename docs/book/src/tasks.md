@@ -115,6 +115,7 @@ commands only; a `script` or `wasm` task is not interrupted.
 | `parallel` | Run `run` commands concurrently |
 | `env`, `cwd`, `shell` | Environment, working dir, shell mode |
 | `env_inputs` | Ambient variables that are [cache](./caching.md) inputs |
+| `tool_inputs` | Commands whose stdout is a [cache](./caching.md) input, e.g. `nuthatch --version` |
 | `foreground` | Inherit stdio (dev servers); not cached |
 | `sources`, `outputs` | [Caching](./caching.md) inputs/outputs |
 | `watch` | File patterns for `yatr watch` |

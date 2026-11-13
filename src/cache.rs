@@ -19,6 +19,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -635,6 +636,36 @@ impl Cache {
         })
     }
 
+    /// Hash the stdout of each `tool_inputs` command, sorted so their order
+    /// does not matter. The command string and its output go in, not the
+    /// binary's path, so the key stays portable.
+    fn hash_tool_inputs(
+        hasher: &mut Hasher,
+        task_name: &str,
+        config: &TaskConfig,
+        project: &Config,
+        cwd: &Path,
+    ) -> Result<()> {
+        if config.tool_inputs.is_empty() {
+            return Ok(());
+        }
+        let env = project.task_env(config);
+        let mut commands = config.tool_inputs.clone();
+        commands.sort();
+        for cmd in &commands {
+            let stdout =
+                project
+                    .tool_outputs
+                    .run(cmd, &env, cwd)
+                    .map_err(|e| YatrError::Cache {
+                        message: format!("task '{task_name}': tool_inputs command `{cmd}` {e}"),
+                    })?;
+            Self::update_field(hasher, cmd.as_bytes());
+            Self::update_field(hasher, &stdout);
+        }
+        Ok(())
+    }
+
     /// Bumped when the shape of a stored entry or of the key changes, so
     /// entries written by an older yatr are never served.
     const KEY_VERSION: &'static [u8] = b"yatr-cache-v3";
@@ -712,6 +743,8 @@ impl Cache {
                 }
             }
         }
+
+        Self::hash_tool_inputs(&mut hasher, task_name, config, project, cwd)?;
 
         let mut deps = deps.to_vec();
         deps.sort();
@@ -1139,6 +1172,69 @@ impl Cache {
     }
 }
 
+type ToolOutput = Arc<OnceLock<std::result::Result<Vec<u8>, String>>>;
+type ToolKey = (String, Vec<(String, String)>, PathBuf);
+
+/// The stdout of each `tool_inputs` command, memoised per invocation.
+///
+/// Keyed on everything that can change what runs: the command, the
+/// environment it sees and, for a program named by path, the directory it is
+/// resolved against.
+#[derive(Debug, Default)]
+pub struct ToolOutputs(Mutex<HashMap<ToolKey, ToolOutput>>);
+
+impl ToolOutputs {
+    fn run(
+        &self,
+        cmd: &str,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) -> std::result::Result<Vec<u8>, String> {
+        let parts = crate::executor::Executor::parse_command(cmd, false);
+        let Some(program) = parts.first() else {
+            return Err("is empty".to_string());
+        };
+        let by_path = program.contains('/') || program.contains('\\');
+        let mut env_key: Vec<_> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        env_key.sort();
+        let key = (
+            cmd.to_string(),
+            env_key,
+            if by_path {
+                cwd.to_path_buf()
+            } else {
+                PathBuf::new()
+            },
+        );
+        let slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_default()
+            .clone();
+        slot.get_or_init(|| {
+            let out = std::process::Command::new(program)
+                .args(&parts[1..])
+                .current_dir(cwd)
+                .envs(env)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("could not run: {e}"))?;
+            if out.status.success() {
+                Ok(out.stdout)
+            } else {
+                Err(format!(
+                    "failed ({}): {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        })
+        .clone()
+    }
+}
+
 /// Cache statistics
 #[derive(Debug, Default)]
 pub struct CacheStats {
@@ -1421,6 +1517,47 @@ mod tests {
         assert_ne!(base, key(&project("24.11.1", "/usr/bin", "/home/a/tc/bin")));
         assert_ne!(base, key(&project("26.11.1", "/opt/bin", "/home/a/tc/bin")));
         assert_eq!(base, key(&project("26.11.1", "/usr/bin", "/home/b/tc/bin")));
+    }
+
+    /// Regression (#46): a `tool_inputs` command's stdout is a key input, and
+    /// a command shared by several tasks runs once per invocation.
+    #[cfg(unix)]
+    #[test]
+    fn test_tool_input_output_is_a_key_input() {
+        use std::os::unix::fs::PermissionsExt;
+        let work = tempfile::tempdir().unwrap();
+        let tool = work.path().join("tool");
+        let write_tool = |version: &str| {
+            std::fs::write(
+                &tool,
+                format!("#!/bin/sh\necho run >> runs\necho {version}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let task: TaskConfig =
+            toml::from_str("run = [\"true\"]\ntool_inputs = [\"./tool --version\"]\n").unwrap();
+        let other: TaskConfig =
+            toml::from_str("run = [\"false\"]\ntool_inputs = [\"./tool --version\"]\n").unwrap();
+        let key =
+            |p: &Config, t: &TaskConfig| Cache::compute_key("t", t, p, &[], work.path()).unwrap();
+
+        write_tool("v1");
+        let first = Config::default();
+        let v1 = key(&first, &task);
+        key(&first, &other);
+        assert_eq!(
+            std::fs::read_to_string(work.path().join("runs")).unwrap(),
+            "run\n"
+        );
+        assert_eq!(v1, key(&Config::default(), &task));
+
+        write_tool("v2");
+        assert_ne!(v1, key(&Config::default(), &task));
+
+        let broken: TaskConfig =
+            toml::from_str("run = [\"true\"]\ntool_inputs = [\"./missing\"]\n").unwrap();
+        assert!(Cache::compute_key("t", &broken, &Config::default(), &[], work.path()).is_err());
     }
 
     #[test]

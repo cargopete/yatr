@@ -1038,6 +1038,7 @@ fn outputs_pattern_capturing_nothing_warns() {
 
 /// Regression (#45): `yatr check` warns on a `${...}` form it does not expand.
 #[test]
+#[allow(clippy::literal_string_with_formatting_args)]
 fn check_warns_on_unsupported_expansion() {
     let stdout = check_stdout(
         "[env]\nA = \"${A:=x}\"\nB = \"${B:-x}\"\n\
@@ -1054,6 +1055,7 @@ fn check_warns_on_unsupported_expansion() {
 /// Regression (#45): `[env] X = "${X:-fallback}"` is a default the caller overrides.
 #[cfg(unix)]
 #[test]
+#[allow(clippy::literal_string_with_formatting_args)]
 fn env_default_is_overridable_by_the_caller() {
     let p = yatr_project(
         "[env]\nYATR_T45 = \"${YATR_T45:-fallback}\"\n\
@@ -1073,6 +1075,45 @@ fn env_default_is_overridable_by_the_caller() {
         .unwrap();
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("X=set"),
+        "{out:?}"
+    );
+}
+
+/// Regression (#46): upgrading a tool named in `tool_inputs` busts the key.
+#[cfg(unix)]
+#[test]
+fn tool_input_upgrade_busts_the_key() {
+    use std::os::unix::fs::PermissionsExt;
+    let p = yatr_project(
+        "[tasks.t]\nrun = [\"yatr-t46\"]\nsources = [\"in.txt\"]\ntool_inputs = [\"yatr-t46 --version\"]\n",
+    );
+    std::fs::write(p.path().join("in.txt"), "").unwrap();
+    let bin = p.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let tool = bin.join("yatr-t46");
+    let write_tool = |version: &str| {
+        std::fs::write(&tool, format!("#!/bin/sh\necho {version}\n")).unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let run = || {
+        Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(p.path())
+            .env("PATH", &path)
+            .arg("t")
+            .output()
+            .unwrap()
+    };
+
+    write_tool("v1");
+    assert!(!was_cached(&run()));
+    assert!(was_cached(&run()));
+    write_tool("v2");
+    let out = run();
+    assert!(!was_cached(&out), "an upgraded tool replayed a cached run");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("v2"),
         "{out:?}"
     );
 }

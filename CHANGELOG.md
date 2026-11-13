@@ -8,6 +8,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A `tool_inputs` task key names commands, such as `nuthatch --version`, whose stdout is a cache input, so upgrading a tool re-runs the tasks that use it. Each command runs once per invocation (#46).
 - `env` values expand `${VAR:-default}` and `${VAR-default}`, so `[env]` can give a default the caller overrides; `yatr check` warns on any other `${...}` form, which is passed through literally (#45).
 
 ### Fixed

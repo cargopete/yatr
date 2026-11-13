@@ -178,6 +178,8 @@ A task that declares `sources` is cached, keyed on:
 - Task configuration (commands, global and task env, pinned toolchains)
 - Source file contents
 - Ambient variables named in `env_inputs`
+- The stdout of commands named in `tool_inputs`, such as `nuthatch --version`,
+  run once per invocation
 - The keys of its dependencies
 
 A task with no `sources` has no declared inputs and is never cached.
@@ -661,6 +663,7 @@ depends = ["other-task"]             # Run these first
 parallel = false                     # Run commands in parallel
 env = { KEY = "value" }              # Task-specific env vars
 env_inputs = ["CLANG"]               # Ambient env vars that affect the cache key
+tool_inputs = ["clang --version"]    # Commands whose stdout affects the cache key
 cwd = "./subdir"                     # Working directory, relative to this file
 shell = false                        # Use shell for commands
 foreground = true                    # Inherit stdio (dev servers); not cached
