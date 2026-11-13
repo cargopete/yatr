@@ -17,19 +17,20 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use blake3::Hasher;
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::config::{CacheProtocol, Config, TaskConfig};
 use crate::error::{Result, YatrError};
+use crate::globs;
 use crate::reapi;
 use crate::remote::RemoteCache;
 
@@ -735,11 +736,16 @@ impl Cache {
     /// anything. Hidden entries are walked: a `sources` glob pointing at
     /// `.github/`, `.cargo/` or similar is a legitimate declared input, and
     /// skipping it silently collapsed the cache key (see `hash_sources`).
+    ///
+    /// `.gitignore` keeps build artifacts out of wildcard matches, but a
+    /// pattern whose literal path is itself ignored (`gen/schema.json`,
+    /// `web/dist/**`) names generated input on purpose, so it is walked
+    /// without ignore rules.
     fn collect_sources(cwd: &Path, patterns: &[String]) -> Result<SourceMatches> {
         let mut builder = GlobSetBuilder::new();
         let mut per_pattern = Vec::with_capacity(patterns.len());
         for pattern in patterns {
-            let glob = Glob::new(pattern).map_err(|e| YatrError::Cache {
+            let glob = globs::compile(pattern).map_err(|e| YatrError::Cache {
                 message: format!("Invalid glob pattern '{pattern}': {e}"),
             })?;
             per_pattern.push(glob.compile_matcher());
@@ -748,41 +754,77 @@ impl Cache {
         let globset = builder.build().map_err(|e| YatrError::Cache {
             message: format!("Failed to build glob set: {e}"),
         })?;
+        let bases: Vec<PathBuf> = patterns
+            .iter()
+            .map(|p| cwd.join(globs::literal_base(p).0))
+            .collect();
+        let mut base_seen = vec![false; patterns.len()];
 
-        // `hidden(false)` walks dotfiles and dot-directories; `.gitignore` is
-        // still honoured, so build artifacts and node_modules stay out.
-        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
         let mut matched = vec![false; patterns.len()];
+        let mut consider = |path: &Path, only: Option<usize>| {
+            let Ok(rel) = path.strip_prefix(cwd) else {
+                return;
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let mut hit = false;
+            for (i, m) in per_pattern.iter().enumerate() {
+                if only.is_none_or(|o| o == i) && m.is_match(&rel_str) {
+                    matched[i] = true;
+                    hit = true;
+                }
+            }
+            if hit {
+                files.insert(rel_str, path.to_path_buf());
+            }
+        };
+
+        // `hidden(false)` walks dotfiles and dot-directories. `require_git(false)`
+        // honours `.gitignore` outside a git checkout too.
         for entry in WalkBuilder::new(cwd)
             .hidden(false)
-            .filter_entry(|e| {
-                !Self::NEVER_WALKED
-                    .iter()
-                    .any(|skip| e.file_name() == std::ffi::OsStr::new(skip))
-            })
+            .require_git(false)
+            .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
             .build()
             .filter_map(std::result::Result::ok)
         {
             let path = entry.path();
-            if !path.is_file() {
-                continue;
+            for (seen, base) in base_seen.iter_mut().zip(&bases) {
+                *seen |= path == base;
             }
-            let Ok(rel) = path.strip_prefix(cwd) else {
-                continue;
-            };
-            if globset.is_match(rel) {
-                for (i, m) in per_pattern.iter().enumerate() {
-                    if m.is_match(rel) {
-                        matched[i] = true;
-                    }
-                }
-                files.push((rel.to_string_lossy().into_owned(), path.to_path_buf()));
+            if path.is_file() && globset.is_match(path.strip_prefix(cwd).unwrap_or(path)) {
+                consider(path, None);
             }
         }
 
-        // Sort by relative path for a deterministic hash.
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok((files, matched))
+        for (i, base) in bases.iter().enumerate() {
+            if base_seen[i]
+                || !base.exists()
+                || Self::never_walked(base.strip_prefix(cwd).unwrap_or(base))
+            {
+                continue;
+            }
+            for entry in WalkDir::new(base)
+                .into_iter()
+                .filter_entry(|e| !Self::never_walked(Path::new(e.file_name())))
+                .filter_map(std::result::Result::ok)
+            {
+                if entry.path().is_file() {
+                    consider(entry.path(), Some(i));
+                }
+            }
+        }
+
+        // A BTreeMap keeps the files sorted by relative path, for a deterministic hash.
+        Ok((files.into_iter().collect(), matched))
+    }
+
+    fn never_walked(rel: &Path) -> bool {
+        rel.components().any(|c| {
+            Self::NEVER_WALKED
+                .iter()
+                .any(|skip| c.as_os_str() == std::ffi::OsStr::new(skip))
+        })
     }
 
     /// The `sources` patterns that match no file under `cwd`. A pattern that
@@ -932,18 +974,39 @@ impl Cache {
 
         let mut files = Vec::new();
         for pattern in patterns {
-            let full = cwd.join(pattern);
-            if full.is_dir() {
-                walk_dir_files(&full, &mut files);
-            } else if let Ok(paths) = glob::glob(&full.to_string_lossy()) {
-                for p in paths.filter_map(std::result::Result::ok) {
-                    if cfg!(unix) && p.is_symlink() {
-                        files.push(p);
-                    } else if p.is_dir() {
-                        walk_dir_files(&p, &mut files);
-                    } else if p.is_file() {
-                        files.push(p);
-                    }
+            let (base, literal) = globs::literal_base(pattern);
+            let base = cwd.join(base);
+            if literal {
+                if cfg!(unix) && base.is_symlink() {
+                    files.push(base);
+                } else if base.is_dir() {
+                    walk_dir_files(&base, &mut files);
+                } else if base.is_file() {
+                    files.push(base);
+                }
+                continue;
+            }
+            let Ok(glob) = globs::compile(pattern) else {
+                continue;
+            };
+            let glob = glob.compile_matcher();
+            let mut walk = WalkDir::new(&base).follow_links(false).into_iter();
+            while let Some(entry) = walk.next() {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let Ok(rel) = entry.path().strip_prefix(cwd) else {
+                    continue;
+                };
+                if !glob.is_match(rel.to_string_lossy().replace('\\', "/")) {
+                    continue;
+                }
+                let ft = entry.file_type();
+                if ft.is_dir() {
+                    walk_dir_files(entry.path(), &mut files);
+                    walk.skip_current_dir();
+                } else if ft.is_file() || (cfg!(unix) && ft.is_symlink()) {
+                    files.push(entry.into_path());
                 }
             }
         }
