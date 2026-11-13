@@ -126,6 +126,8 @@ struct Ctx {
     task: String,
     sink: Sink,
     cancel: CancellationToken,
+    /// `[settings] shell`, for commands run in shell mode
+    shell: Option<String>,
     timeout: Option<u64>,
     deadline: Option<tokio::time::Instant>,
 }
@@ -561,11 +563,13 @@ impl Executor {
 
     /// How many tasks may run at once.
     fn parallelism(&self) -> usize {
-        if self.exec_config.parallelism == 0 {
-            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
-        } else {
-            self.exec_config.parallelism
-        }
+        [
+            self.exec_config.parallelism,
+            self.config.settings.parallelism,
+        ]
+        .into_iter()
+        .find(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, std::num::NonZero::get))
     }
 
     /// Build the dependency bookkeeping for the ready-queue scheduler:
@@ -664,6 +668,7 @@ impl Executor {
                 echo,
             },
             cancel,
+            shell: config.settings.shell.clone(),
             timeout: task.config.timeout,
             deadline: task
                 .config
@@ -845,21 +850,7 @@ impl Executor {
             reason: "Foreground task must have at least one command".to_string(),
         })?;
 
-        let parts = Self::parse_command(cmd, exec_config.shell);
-
-        let mut command = if exec_config.shell {
-            let shell = if cfg!(windows) { "cmd" } else { "sh" };
-            let flag = if cfg!(windows) { "/C" } else { "-c" };
-            let mut c = Command::new(shell);
-            c.arg(flag).arg(cmd);
-            c
-        } else {
-            let mut c = Command::new(&parts[0]);
-            if parts.len() > 1 {
-                c.args(&parts[1..]);
-            }
-            c
-        };
+        let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command
             .current_dir(cwd)
@@ -976,21 +967,7 @@ impl Executor {
         exec_config: &ExecutorConfig,
         ctx: &Ctx,
     ) -> Result<()> {
-        let parts = Self::parse_command(cmd, exec_config.shell);
-
-        let mut command = if exec_config.shell {
-            let shell = if cfg!(windows) { "cmd" } else { "sh" };
-            let flag = if cfg!(windows) { "/C" } else { "-c" };
-            let mut c = Command::new(shell);
-            c.arg(flag).arg(cmd);
-            c
-        } else {
-            let mut c = Command::new(&parts[0]);
-            if parts.len() > 1 {
-                c.args(&parts[1..]);
-            }
-            c
-        };
+        let mut command = Self::build_command(cmd, exec_config.shell, ctx.shell.as_deref());
 
         command
             .current_dir(cwd)
@@ -1019,6 +996,25 @@ impl Executor {
             });
         }
         Ok(())
+    }
+
+    /// A `Command` for `cmd`: through `shell` (or the platform default) in
+    /// shell mode, otherwise split into program and arguments.
+    fn build_command(cmd: &str, use_shell: bool, shell: Option<&str>) -> Command {
+        if use_shell {
+            let default = if cfg!(windows) { "cmd" } else { "sh" };
+            let program = shell.unwrap_or(default);
+            let is_cmd = Path::new(program)
+                .file_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"));
+            let mut c = Command::new(program);
+            c.arg(if is_cmd { "/C" } else { "-c" }).arg(cmd);
+            return c;
+        }
+        let parts = Self::parse_command(cmd, false);
+        let mut c = Command::new(parts.first().map_or("", String::as_str));
+        c.args(parts.iter().skip(1));
+        c
     }
 
     /// Parse a command string into parts

@@ -598,7 +598,7 @@ KEY = "value"
 [settings]
 cache = true              # Enable caching (default: true)
 cache_dir = ".yatr"       # Cache directory
-parallelism = 0           # Max parallel tasks (0 = CPU count)
+parallelism = 0           # Max parallel tasks (0 = CPU count); --parallel overrides
 watch_debounce_ms = 300   # Watch debounce delay
 shell = "/bin/sh"         # Default shell when shell mode is enabled
 
