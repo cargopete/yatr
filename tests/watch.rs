@@ -127,6 +127,8 @@ fn clear_flag_clears_the_screen() {
     assert!(w.wait_for("RAN", 1), "initial run: {}", w.output());
     edit(dir.path(), "a.txt");
     assert!(w.wait_for("RAN", 2), "no re-run on edit: {}", w.output());
+    // Windows clears through the console API, which a piped stdout does not have.
+    #[cfg(unix)]
     assert!(
         w.output().matches("\x1b[2J").count() >= 2,
         "{:?}",
