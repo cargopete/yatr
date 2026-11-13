@@ -95,7 +95,16 @@ impl Executor {
 
     /// Execute tasks according to the execution plan
     pub async fn execute(&self, graph: &TaskGraph, task_name: &str) -> Result<Vec<TaskResult>> {
-        let tasks = graph.execution_order(task_name)?;
+        self.execute_all(graph, &[task_name]).await
+    }
+
+    /// Execute several tasks as one graph, with one plan and one summary.
+    pub async fn execute_all<S: AsRef<str> + Sync>(
+        &self,
+        graph: &TaskGraph,
+        task_names: &[S],
+    ) -> Result<Vec<TaskResult>> {
+        let tasks = graph.execution_order_all(task_names)?;
 
         if self.exec_config.dry_run {
             if !self.exec_config.json {

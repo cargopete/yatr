@@ -4,13 +4,14 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// YATR - Yet Another Task Runner for Rust projects
 #[derive(Parser, Debug)]
 #[command(name = "yatr")]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Cli {
     /// Path to yatr.toml config file
     #[arg(short, long, global = true)]
@@ -35,9 +36,47 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Task to run (shorthand for `yatr run <task>`)
-    #[arg(trailing_var_arg = true)]
+    /// Tasks to run (shorthand for `yatr run <task>...`)
     pub task: Vec<String>,
+
+    #[command(flatten)]
+    pub run: RunArgs,
+}
+
+/// Options shared by `yatr run <task>...` and the bare `yatr <task>...` form.
+#[derive(Args, Debug, Clone, Default)]
+pub struct RunArgs {
+    /// Show execution plan without running
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Force run even if cached
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Number of parallel tasks (0 = auto)
+    #[arg(short, long, default_value = "0")]
+    pub parallel: usize,
+
+    /// Use shell to execute commands
+    #[arg(long)]
+    pub shell: bool,
+
+    /// Emit machine-readable JSON instead of human output
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write a Chrome trace of the run to this path (open in `chrome://tracing`)
+    #[arg(long, value_name = "PATH")]
+    pub profile: Option<PathBuf>,
+
+    /// Only run tasks affected by changes since this git ref
+    #[arg(long, value_name = "GIT_REF")]
+    pub affected: Option<String>,
+
+    /// Warn when a task writes files outside its declared `outputs`
+    #[arg(long)]
+    pub trace_io: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -48,37 +87,8 @@ pub enum Commands {
         #[arg(required = false)]
         tasks: Vec<String>,
 
-        /// Show execution plan without running
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Force run even if cached
-        #[arg(short, long)]
-        force: bool,
-
-        /// Number of parallel tasks (0 = auto)
-        #[arg(short, long, default_value = "0")]
-        parallel: usize,
-
-        /// Use shell to execute commands
-        #[arg(long)]
-        shell: bool,
-
-        /// Emit machine-readable JSON instead of human output
-        #[arg(long)]
-        json: bool,
-
-        /// Write a Chrome trace of the run to this path (open in `chrome://tracing`)
-        #[arg(long, value_name = "PATH")]
-        profile: Option<PathBuf>,
-
-        /// Only run tasks affected by changes since this git ref
-        #[arg(long, value_name = "GIT_REF")]
-        affected: Option<String>,
-
-        /// Warn when a task writes files outside its declared `outputs`
-        #[arg(long)]
-        trace_io: bool,
+        #[command(flatten)]
+        opts: RunArgs,
     },
 
     /// List available tasks
@@ -178,11 +188,11 @@ pub enum GraphFormat {
 
 impl Cli {
     /// Get the effective command, treating bare task names as `run <task>`
-    pub const fn effective_command(&self) -> EffectiveCommand {
+    pub fn effective_command(&self) -> EffectiveCommand {
         if let Some(cmd) = &self.command {
             EffectiveCommand::Subcommand(cmd)
         } else if !self.task.is_empty() {
-            EffectiveCommand::RunTasks(&self.task)
+            EffectiveCommand::RunTasks(&self.task, &self.run)
         } else {
             EffectiveCommand::None
         }
@@ -191,6 +201,6 @@ impl Cli {
 
 pub enum EffectiveCommand<'a> {
     Subcommand(&'a Commands),
-    RunTasks(&'a Vec<String>),
+    RunTasks(&'a [String], &'a RunArgs),
     None,
 }
