@@ -49,6 +49,18 @@ foreground = true           # inherit stdio; not cached
 run = ["cargo watch -x run"]
 ```
 
+## Output
+
+A task's stdout and stderr are streamed as it runs, each line prefixed with the
+task's name so parallel tasks stay readable. stderr stays on stderr, and is
+shown for tasks that succeed as well as for those that fail. A cache hit replays
+the output captured when the task last ran (all of it on stdout, since the two
+streams are stored together). With `--json` nothing is streamed; each task's
+output is in the `output` field of the document instead.
+
+If yatr's stdout is closed early (`yatr test | head`), further output is dropped
+and the run carries on; the exit status still reports how the tasks went.
+
 ## Full task reference
 
 | Field | Meaning |

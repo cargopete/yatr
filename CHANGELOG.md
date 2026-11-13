@@ -9,6 +9,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A failing task's stdout and stderr are shown, and yatr exits with the failing command's exit code instead of always 1 (#5).
+- Task output is streamed as it runs, prefixed with the task name; stderr is kept on success, leading whitespace is preserved, and a closed stdout no longer panics (#22).
 
 ## [1.1.0] — 2026-07-15
 

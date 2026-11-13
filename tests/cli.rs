@@ -332,3 +332,118 @@ fn failing_task_json_carries_output_and_code() {
         .unwrap()
         .contains("diag"));
 }
+
+/// Output is streamed while the task runs, not held back until it exits.
+#[cfg(unix)]
+#[test]
+fn output_streams_while_task_runs() {
+    use std::io::BufRead;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.slow]\nshell = true\nno_cache = true\nrun = [\"echo first; sleep 3; echo second\"]\n",
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("yatr"))
+        .current_dir(dir.path())
+        .arg("slow")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let first = stdout
+        .lines()
+        .map_while(std::result::Result::ok)
+        .find(|l| l.contains("first"));
+    let seen_after = start.elapsed();
+    child.wait().unwrap();
+    assert!(first.is_some());
+    assert!(
+        seen_after < std::time::Duration::from_secs(2),
+        "first line arrived only after {seen_after:?}"
+    );
+}
+
+/// stderr is shown for a successful task too.
+#[cfg(unix)]
+#[test]
+fn successful_task_shows_stderr() {
+    let (_dir, out) = run_in(
+        "[tasks.warn]\nshell = true\nno_cache = true\nrun = [\"echo out; echo 'warning: err' >&2\"]\n",
+        &["warn"],
+    );
+    assert!(out.status.success());
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("out") && all.contains("warning: err"), "{all}");
+}
+
+/// Leading whitespace survives, both live and when replayed from the cache.
+#[cfg(unix)]
+#[test]
+fn output_keeps_leading_whitespace_live_and_cached() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "x").unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.pad]\nshell = true\nsources = [\"in.txt\"]\n\
+         run = [\"printf '   right\\\\n   aligned\\\\n'\"]\n",
+    )
+    .unwrap();
+    for run in ["live", "cached"] {
+        let out = Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(dir.path())
+            .arg("pad")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let tail = |word: &str| {
+            stdout
+                .lines()
+                .find(|l| l.ends_with(word))
+                .map(|l| l[..l.len() - word.len()].to_string())
+        };
+        let (right, aligned) = (tail("right"), tail("aligned"));
+        assert!(right.is_some(), "{run}: {stdout}");
+        assert_eq!(right, aligned, "{run}: {stdout}");
+        assert!(right.unwrap().ends_with("   "), "{run}: {stdout}");
+    }
+    let cached = Command::cargo_bin("yatr")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("pad")
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&cached.stdout).contains("cached"));
+}
+
+/// A reader that closes stdout early does not make yatr panic.
+#[cfg(unix)]
+#[test]
+fn closed_stdout_is_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.pad]\nshell = true\nno_cache = true\nrun = [\"sleep 0.5; seq 1 2000\"]\n",
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("yatr"))
+        .current_dir(dir.path())
+        .arg("pad")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+}

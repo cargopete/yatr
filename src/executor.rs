@@ -19,6 +19,7 @@ use crate::cache::Cache;
 use crate::config::Config;
 use crate::error::{Result, YatrError};
 use crate::graph::{ExecutionPlan, TaskGraph, TaskNode};
+use crate::output::{errln, out, outln};
 use crate::script::ScriptEngine;
 
 /// Result of executing a single task
@@ -52,6 +53,84 @@ impl Capture {
             .lock()
             .map(|mut buf| std::mem::take(&mut *buf))
             .unwrap_or_default()
+    }
+}
+
+/// Echoes a running task's lines to the terminal, prefixed with its name.
+#[derive(Clone)]
+struct Echo {
+    prefix: String,
+    progress: MultiProgress,
+}
+
+impl Echo {
+    fn line(&self, line: &str, to_stderr: bool) {
+        let prefix = if line.is_empty() {
+            self.prefix.trim_end()
+        } else {
+            &self.prefix
+        };
+        self.progress.suspend(|| {
+            if to_stderr {
+                errln!("{prefix}{line}");
+            } else {
+                outln!("{prefix}{line}");
+            }
+        });
+    }
+
+    /// Print output that was not streamed (a cache hit, a script, a plugin).
+    fn replay(&self, output: &str) {
+        let body = output.trim_end();
+        let first = body.lines().position(|l| !l.trim().is_empty());
+        for line in body.lines().skip(first.unwrap_or(usize::MAX)) {
+            self.line(line, false);
+        }
+    }
+}
+
+/// Where a command's output goes: always into a capture, and live to the
+/// terminal unless the run is emitting JSON.
+#[derive(Clone)]
+struct Sink {
+    capture: Capture,
+    echo: Option<Echo>,
+}
+
+impl Sink {
+    fn with_capture(&self, capture: Capture) -> Self {
+        Self {
+            capture,
+            echo: self.echo.clone(),
+        }
+    }
+
+    /// Record output produced in one piece rather than streamed.
+    fn push_whole(&self, output: &str) {
+        self.capture.push(output);
+        if let Some(echo) = &self.echo {
+            echo.replay(output);
+        }
+    }
+}
+
+/// Copy one of a child's output streams into the sink, line by line.
+async fn pump(stream: impl tokio::io::AsyncRead + Unpin, sink: Sink, to_stderr: bool) {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let text = String::from_utf8_lossy(&buf);
+        sink.capture.push(&text);
+        if let Some(echo) = &sink.echo {
+            echo.line(text.trim_end_matches(['\n', '\r']), to_stderr);
+        }
     }
 }
 
@@ -148,6 +227,7 @@ impl Executor {
 
         let semaphore = Arc::new(Semaphore::new(parallelism));
         let multi_progress = MultiProgress::new();
+        let name_width = tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
 
         // Ready-queue scheduling: a task starts the moment all of its
         // dependencies have completed, rather than waiting for its whole
@@ -181,8 +261,13 @@ impl Executor {
                     pb
                 });
 
+                let echo = (!exec_config.json).then(|| Echo {
+                    prefix: format!("{} ", style(format!("{:<name_width$} │", task.name)).dim()),
+                    progress: mp.clone(),
+                });
                 let result =
-                    Self::execute_single_task(&task, &config, &exec_config, cache.as_ref()).await;
+                    Self::execute_single_task(&task, &config, &exec_config, cache.as_ref(), echo)
+                        .await;
 
                 if let Some(pb) = pb {
                     pb.finish_and_clear();
@@ -283,6 +368,7 @@ impl Executor {
         config: &Config,
         exec_config: &ExecutorConfig,
         cache: Option<&Cache>,
+        echo: Option<Echo>,
     ) -> Result<TaskResult> {
         let start = Instant::now();
         let start_offset = exec_config.run_start.elapsed();
@@ -300,6 +386,9 @@ impl Executor {
             if let Some(cache) = cache {
                 if !task.config.no_cache {
                     if let Some(cached) = cache.get(&task.name, &task.config, &cwd).await? {
+                        if let Some(echo) = &echo {
+                            echo.replay(&cached);
+                        }
                         return Ok(TaskResult {
                             name: task.name.clone(),
                             success: true,
@@ -325,8 +414,11 @@ impl Executor {
         let trace_before =
             (exec_config.trace_io && !task.config.foreground).then(|| crate::trace::snapshot(&cwd));
 
-        let capture = Capture::default();
-        let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &capture).await;
+        let sink = Sink {
+            capture: Capture::default(),
+            echo,
+        };
+        let result = Self::run_task_body(task, &env, &cwd, &task_exec_config, &sink).await;
 
         let duration = start.elapsed();
 
@@ -335,7 +427,7 @@ impl Executor {
             Self::report_io_trace(&task.name, &cwd, &task.config.outputs, &before);
         }
 
-        let output = capture.take();
+        let output = sink.capture.take();
         match result {
             Ok(()) => {
                 // Store in cache (skip foreground tasks: their output isn't captured)
@@ -377,21 +469,21 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        capture: &Capture,
+        sink: &Sink,
     ) -> Result<()> {
         if task.config.foreground {
             // Execute in foreground with inherited stdio (for long-running processes)
             Self::execute_foreground(&task.name, &task.config.run, env, cwd, exec_config)
                 .await
-                .map(|out| capture.push(&out))
+                .map(|out| sink.capture.push(&out))
         } else if let Some(wasm) = &task.config.wasm {
             // Execute a sandboxed WASM plugin (local path or downloaded URL)
             Self::execute_wasm(&task.name, wasm, cwd, env)
                 .await
-                .map(|out| capture.push(&out))
+                .map(|out| sink.push_whole(&out))
         } else if let Some(script) = &task.config.script {
             // Execute Rhai script
-            Self::execute_script(&task.name, script, env, cwd).map(|out| capture.push(&out))
+            Self::execute_script(&task.name, script, env, cwd).map(|out| sink.push_whole(&out))
         } else if task.config.parallel {
             // Execute commands in parallel
             Self::execute_commands_parallel(
@@ -400,7 +492,7 @@ impl Executor {
                 env,
                 cwd,
                 exec_config,
-                capture,
+                sink,
             )
             .await
         } else {
@@ -411,7 +503,7 @@ impl Executor {
                 env,
                 cwd,
                 exec_config,
-                capture,
+                sink,
             )
             .await
         }
@@ -427,7 +519,7 @@ impl Executor {
         let after = crate::trace::snapshot(cwd);
         let undeclared = crate::trace::undeclared_writes(before, &after, outputs);
         if !undeclared.is_empty() {
-            eprintln!(
+            errln!(
                 "{} task '{task_name}' wrote files not declared as `outputs`: {}",
                 style("trace:").yellow().bold(),
                 undeclared.join(", ")
@@ -474,10 +566,10 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        capture: &Capture,
+        sink: &Sink,
     ) -> Result<()> {
         for cmd in commands {
-            Self::execute_command(cmd, env, cwd, exec_config, capture).await?;
+            Self::execute_command(cmd, env, cwd, exec_config, sink).await?;
         }
         Ok(())
     }
@@ -539,7 +631,7 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        capture: &Capture,
+        sink: &Sink,
     ) -> Result<()> {
         let mut handles = Vec::new();
 
@@ -549,7 +641,7 @@ impl Executor {
             let cwd = cwd.to_path_buf();
             let exec_config = exec_config.clone();
             let own = Capture::default();
-            let theirs = own.clone();
+            let theirs = sink.with_capture(own.clone());
 
             handles.push((
                 own,
@@ -565,7 +657,7 @@ impl Executor {
                 .await
                 .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))
                 .and_then(|r| r);
-            capture.push(&own.take());
+            sink.capture.push(&own.take());
             if let Err(e) = result {
                 first_err.get_or_insert(e);
             }
@@ -580,7 +672,7 @@ impl Executor {
         env: &HashMap<String, String>,
         cwd: &Path,
         exec_config: &ExecutorConfig,
-        capture: &Capture,
+        sink: &Sink,
     ) -> Result<()> {
         let parts = Self::parse_command(cmd, exec_config.shell);
 
@@ -601,17 +693,25 @@ impl Executor {
         command
             .current_dir(cwd)
             .envs(env)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = command.output().await?;
-        capture.push(&String::from_utf8_lossy(&output.stdout));
-        capture.push(&String::from_utf8_lossy(&output.stderr));
+        let mut child = command.spawn()?;
+        let mut pumps = JoinSet::new();
+        if let Some(stdout) = child.stdout.take() {
+            pumps.spawn(pump(stdout, sink.clone(), false));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pumps.spawn(pump(stderr, sink.clone(), true));
+        }
+        let status = child.wait().await?;
+        while pumps.join_next().await.is_some() {}
 
-        if !output.status.success() {
+        if !status.success() {
             return Err(YatrError::CommandFailed {
                 command: cmd.to_string(),
-                code: exit_code(output.status),
+                code: exit_code(status),
             });
         }
         Ok(())
@@ -659,12 +759,12 @@ impl Executor {
     /// Print dry-run execution plan
     #[allow(clippy::unused_self)]
     fn print_dry_run(&self, plan: &ExecutionPlan) {
-        println!("{}", style("Execution plan (dry run):").bold().cyan());
-        println!();
+        outln!("{}", style("Execution plan (dry run):").bold().cyan());
+        outln!();
 
         for (i, group) in plan.parallel_groups.iter().enumerate() {
             let parallel_note = if group.len() > 1 { " (parallel)" } else { "" };
-            println!(
+            outln!(
                 "{} {}{}",
                 style(format!("Stage {}:", i + 1)).bold(),
                 group
@@ -678,10 +778,10 @@ impl Executor {
             for task in group {
                 if !task.config.run.is_empty() {
                     for cmd in &task.config.run {
-                        println!("    {} {}", style("→").dim(), cmd);
+                        outln!("    {} {}", style("→").dim(), cmd);
                     }
                 } else if task.config.script.is_some() {
-                    println!(
+                    outln!(
                         "    {} {}",
                         style("→").dim(),
                         style("[rhai script]").italic()
@@ -705,7 +805,7 @@ impl Executor {
 
         let duration = format!("{:.2}s", result.duration.as_secs_f64());
 
-        println!(
+        outln!(
             "{} {} {}",
             status,
             style(&result.name).bold(),
@@ -713,24 +813,14 @@ impl Executor {
         );
 
         if let Some(error) = &result.error {
-            eprintln!("  {}", style(error).red());
-        }
-
-        // Print command output if present
-        if let Some(output) = &result.output {
-            let trimmed = output.trim();
-            if !trimmed.is_empty() {
-                for line in trimmed.lines() {
-                    println!("  {line}");
-                }
-            }
+            errln!("  {}", style(error).red());
         }
     }
 
     /// Print execution summary
     #[allow(clippy::unused_self)]
     fn print_summary(&self, results: &[TaskResult]) {
-        println!();
+        outln!();
 
         let total: Duration = results.iter().map(|r| r.duration).sum();
         let succeeded = results.iter().filter(|r| r.success).count();
@@ -738,7 +828,7 @@ impl Executor {
         let cached = results.iter().filter(|r| r.cached).count();
 
         if failed == 0 {
-            println!(
+            outln!(
                 "{} {} tasks completed in {:.2}s ({} cached)",
                 style("✓").green().bold(),
                 succeeded,
@@ -746,7 +836,7 @@ impl Executor {
                 cached
             );
         } else {
-            println!(
+            outln!(
                 "{} {} succeeded, {} failed in {:.2}s",
                 style("✗").red().bold(),
                 succeeded,

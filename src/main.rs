@@ -32,6 +32,7 @@ mod error;
 mod executor;
 mod graph;
 mod lsp;
+mod output;
 mod reapi;
 mod remote;
 mod script;
@@ -46,6 +47,7 @@ use config::Config;
 use error::{Result, YatrError};
 use executor::{Executor, ExecutorConfig, TaskResult};
 use graph::TaskGraph;
+use output::{errln, out, outln};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -75,7 +77,7 @@ async fn main() -> ExitCode {
             // Render via miette for a clean message + diagnostic code/help,
             // rather than the raw `{:?}` struct debug.
             let code = e.exit_code();
-            eprintln!("{:?}", miette::Report::new(e));
+            errln!("{:?}", miette::Report::new(e));
             ExitCode::from(code)
         }
     }
@@ -170,7 +172,7 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
             let schema = schemars::schema_for!(Config);
             let json = serde_json::to_string_pretty(&schema)
                 .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
-            println!("{json}");
+            outln!("{json}");
             Ok(())
         }
 
@@ -255,10 +257,10 @@ fn run_check_command(cli: &Cli) -> Result<()> {
     }
 
     for w in &warnings {
-        println!("{} {w}", style("warning:").yellow().bold());
+        outln!("{} {w}", style("warning:").yellow().bold());
     }
     for e in &errors {
-        println!("{} {e}", style("error:").red().bold());
+        outln!("{} {e}", style("error:").red().bold());
     }
 
     if errors.is_empty() {
@@ -267,7 +269,7 @@ fn run_check_command(cli: &Cli) -> Result<()> {
         } else {
             format!(", {} warning(s)", warnings.len())
         };
-        println!(
+        outln!(
             "{} {} is valid ({} tasks{suffix})",
             style("✓").green(),
             path.display(),
@@ -298,20 +300,20 @@ fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result
         }))?,
         ListFormat::Plain => {
             for name in names {
-                println!("{name}");
+                outln!("{name}");
             }
         }
         ListFormat::Table => {
             if names.is_empty() {
-                println!("{} No tasks affected since {git_ref}", style("✓").green());
+                outln!("{} No tasks affected since {git_ref}", style("✓").green());
             } else {
-                println!(
+                outln!(
                     "{}",
                     style(format!("Affected by changes since {git_ref}:")).bold()
                 );
-                println!();
+                outln!();
                 for name in names {
-                    println!("  {}", style(name).cyan().bold());
+                    outln!("  {}", style(name).cyan().bold());
                 }
             }
         }
@@ -359,7 +361,7 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
         let set = affected::affected_tasks(&graph, &changed);
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
         if filtered.is_empty() && !opts.json {
-            println!(
+            outln!(
                 "{} No requested tasks affected since {git_ref} — nothing to do",
                 style("✓").green()
             );
@@ -432,7 +434,7 @@ async fn run_tasks(tasks: &[String], opts: RunOpts, cli: &Cli) -> Result<()> {
     if let Some(path) = &opts.profile {
         write_profile(&all_results, path)?;
         if !opts.json {
-            println!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
+            outln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
         }
     }
 
@@ -507,7 +509,7 @@ fn print_run_json(results: &[TaskResult]) -> Result<()> {
 fn print_json(value: &serde_json::Value) -> Result<()> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
-    println!("{text}");
+    outln!("{text}");
     Ok(())
 }
 
@@ -523,26 +525,26 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
     match cmd {
         CacheCommands::Stats => {
             let stats = cache.stats()?;
-            println!("Cache: {stats}");
+            outln!("Cache: {stats}");
         }
 
         CacheCommands::Clear { task } => {
             if let Some(task) = task {
                 let removed = cache.clear_task(task)?;
-                println!(
+                outln!(
                     "{} Cleared {removed} cache {} for task '{task}'",
                     style("✓").green(),
                     if removed == 1 { "entry" } else { "entries" },
                 );
             } else {
                 cache.clear().await?;
-                println!("{} Cache cleared", style("✓").green());
+                outln!("{} Cache cleared", style("✓").green());
             }
         }
 
         CacheCommands::Path => {
             let stats = cache.stats()?;
-            println!("{}", stats.cache_dir.display());
+            outln!("{}", stats.cache_dir.display());
         }
     }
 
@@ -552,8 +554,8 @@ async fn run_cache_command(cmd: &CacheCommands, cli: &Cli) -> Result<()> {
 fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show_deps: bool) {
     match format {
         ListFormat::Table => {
-            println!("{}", style("Available tasks:").bold());
-            println!();
+            outln!("{}", style("Available tasks:").bold());
+            outln!();
 
             let mut names: Vec<_> = graph.task_names().collect();
             names.sort_unstable();
@@ -564,7 +566,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                 if let Some(task) = graph.get_task(name) {
                     let desc = task.config.desc.as_deref().unwrap_or("");
 
-                    print!(
+                    out!(
                         "  {}{}  {}",
                         style(name).cyan().bold(),
                         " ".repeat(max_name_len - name.len()),
@@ -574,7 +576,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                     if show_deps {
                         if let Some(deps) = graph.dependencies(name) {
                             if !deps.is_empty() {
-                                print!(
+                                out!(
                                     " {}",
                                     style(format!("[deps: {}]", deps.join(", "))).yellow().dim()
                                 );
@@ -582,7 +584,7 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                         }
                     }
 
-                    println!();
+                    outln!();
                 }
             }
         }
@@ -603,14 +605,14 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
                     tasks.insert(name.to_string(), serde_json::Value::Object(obj));
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&tasks).unwrap());
+            outln!("{}", serde_json::to_string_pretty(&tasks).unwrap());
         }
 
         ListFormat::Plain => {
             let mut names: Vec<_> = graph.task_names().collect();
             names.sort_unstable();
             for name in names {
-                println!("{name}");
+                outln!("{name}");
             }
         }
     }
@@ -625,16 +627,16 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
 
     match format {
         GraphFormat::Text => {
-            println!("{}", style("Task dependency graph:").bold());
-            println!();
+            outln!("{}", style("Task dependency graph:").bold());
+            outln!();
 
             for task_node in &tasks {
                 let deps = graph.dependencies(&task_node.name).unwrap_or_default();
 
                 if deps.is_empty() {
-                    println!("  {}", style(&task_node.name).cyan().bold());
+                    outln!("  {}", style(&task_node.name).cyan().bold());
                 } else {
-                    println!(
+                    outln!(
                         "  {} {} {}",
                         style(&task_node.name).cyan().bold(),
                         style("←").dim(),
@@ -645,19 +647,19 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
         }
 
         GraphFormat::Dot => {
-            println!("digraph yatr {{");
-            println!("  rankdir=LR;");
-            println!("  node [shape=box];");
+            outln!("digraph yatr {{");
+            outln!("  rankdir=LR;");
+            outln!("  node [shape=box];");
 
             for task_node in &tasks {
                 if let Some(deps) = graph.dependencies(&task_node.name) {
                     for dep in deps {
-                        println!("  \"{}\" -> \"{}\";", dep, task_node.name);
+                        outln!("  \"{}\" -> \"{}\";", dep, task_node.name);
                     }
                 }
             }
 
-            println!("}}");
+            outln!("}}");
         }
 
         GraphFormat::Json => {
@@ -685,7 +687,7 @@ fn print_graph(graph: &TaskGraph, task: Option<&str>, format: &GraphFormat) -> R
                 "edges": edges,
             });
 
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            outln!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
     }
 
@@ -739,7 +741,7 @@ run = ["cargo build --release"]
 
     std::fs::write(path, template)?;
 
-    println!(
+    outln!(
         "{} Created {}",
         style("✓").green(),
         style("YATR.toml").bold()
