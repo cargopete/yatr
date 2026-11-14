@@ -718,6 +718,33 @@ fn was_cached(out: &std::process::Output) -> bool {
     String::from_utf8_lossy(&out.stderr).contains("✓ cached")
 }
 
+/// An aggregate runs nothing, but a change behind it still reaches the tasks
+/// that depend on it.
+#[test]
+fn dependency_change_reaches_through_an_aggregate() {
+    let p = yatr_project(
+        "[tasks.gen]\nrun = [\"echo gen\"]\nsources = [\"in.txt\"]\n\
+         [tasks.all]\ndepends = [\"gen\"]\n\
+         [tasks.pack]\ndepends = [\"all\"]\nrun = [\"echo pack\"]\nsources = [\"pack.txt\"]\n",
+    );
+    std::fs::write(p.path().join("in.txt"), "1").unwrap();
+    std::fs::write(p.path().join("pack.txt"), "1").unwrap();
+    assert!(run_yatr(p.path(), &["pack"]).status.success());
+
+    let doc = |out: std::process::Output| -> serde_json::Value {
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let again = doc(run_yatr(p.path(), &["run", "--json", "pack"]));
+    assert_eq!(again["summary"]["cached"], 2);
+
+    std::fs::write(p.path().join("in.txt"), "2").unwrap();
+    let after = doc(run_yatr(p.path(), &["run", "--json", "pack"]));
+    assert_eq!(
+        after["summary"]["cached"], 0,
+        "pack replayed a stale result"
+    );
+}
+
 /// A task with no `sources` has undeclared inputs, so it is never cached.
 #[test]
 fn sourceless_task_is_not_cached() {

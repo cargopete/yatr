@@ -14,7 +14,15 @@ Commands:
   check     Validate yatr.toml (referenced files, config smells)
   schema    Print the JSON Schema for yatr.toml
   lsp       Run the yatr.toml language server (LSP over stdio)
+  explain   Say whether a task would run or come from cache, and why
+  agents    Print or update the AGENTS.md section describing the tasks
+  mcp       Run a Model Context Protocol server over stdio
 ```
+
+`explain`, `agents` and `mcp` were added after 1.0. A task with one of those
+names is still what the bare form runs (`yatr explain` runs the task), so adding
+them broke nobody; rename the task to reach the subcommand. They are described
+in [Coding agents](./agents.md).
 
 ## `run`
 
@@ -29,6 +37,10 @@ yatr run [TASKS]... [OPTIONS]
   --affected <GIT_REF> Only run tasks affected by changes since the ref
   --trace-io           Warn when a task writes outside its declared `outputs`
   -k, --keep-going     After a failure, let tasks that do not depend on it finish
+  --agent              Report for a coding agent (also `YATR_AGENT=1`)
+  --ndjson             One JSON event per line as the run progresses
+  --tail <LINES>       Keep the last N lines of each task's output in the
+                       agent and JSON reports; the rest goes to .yatr/logs/
 ```
 
 The bare form `yatr [OPTIONS] [TASKS]...` is shorthand for `yatr run` and takes
@@ -49,6 +61,9 @@ and `env`, and a `mode:` line naming whichever of `shell`, `parallel`,
       --cwd <DIR>      Working directory
       --no-color       Disable colours
 ```
+
+Global options may come before the subcommand or after it: `yatr -c ci.toml list`
+and `yatr list -c ci.toml` are the same.
 
 `-v` prints each command, as `$ <command>`, on stderr just before it runs.
 `-q` drops the per-task status lines, the spinner and the closing summary; task

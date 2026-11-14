@@ -21,6 +21,7 @@ use crate::config::Config;
 use crate::error::{Result, YatrError};
 use crate::graph::{ExecutionPlan, TaskGraph, TaskNode};
 use crate::output::{errln, out, outln};
+use crate::report;
 use crate::script::ScriptEngine;
 
 /// Result of executing a single task
@@ -38,6 +39,42 @@ pub struct TaskResult {
     pub exit_code: Option<i32>,
     /// Stopped because another task failed or yatr was interrupted
     pub cancelled: bool,
+    /// What the cache did for this task
+    pub cache: CacheStatus,
+    /// The command that failed, when one did
+    pub command: Option<String>,
+    /// Failed, but `allow_failure` keeps that from failing the run
+    pub allowed_failure: bool,
+    /// Where the whole output was written, when logs are kept
+    pub log: Option<std::path::PathBuf>,
+}
+
+/// What the cache did for a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheStatus {
+    /// Restored from the cache without running
+    Hit,
+    /// Looked up, not found, and run
+    Miss,
+    /// Run because of `--force`, without a lookup
+    Forced,
+    /// Never cached: no `sources`, `no_cache`, or a foreground task
+    Uncacheable,
+    /// Caching is off for the run
+    Disabled,
+}
+
+impl CacheStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Forced => "forced",
+            Self::Uncacheable => "uncacheable",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 /// How long a cancelled task gets between SIGTERM and SIGKILL.
@@ -64,7 +101,7 @@ impl Capture {
 
 /// What one scheduled run of a task carries besides the task itself.
 struct TaskRun<'a> {
-    dep_keys: &'a [String],
+    dep_keys: &'a [(String, String)],
     fingerprints: &'a Fingerprints,
     echo: Option<Echo>,
     cancel: CancellationToken,
@@ -120,6 +157,8 @@ impl Echo {
 struct Sink {
     capture: Capture,
     echo: Option<Echo>,
+    /// The task name, when each line is also an `--ndjson` output event
+    events: Option<String>,
 }
 
 impl Sink {
@@ -127,6 +166,7 @@ impl Sink {
         Self {
             capture,
             echo: self.echo.clone(),
+            events: self.events.clone(),
         }
     }
 
@@ -303,8 +343,12 @@ async fn pump(stream: impl tokio::io::AsyncRead + Unpin, sink: Sink, to_stderr: 
         }
         let text = String::from_utf8_lossy(&buf);
         sink.capture.push(&text);
+        let line = text.trim_end_matches(['\n', '\r']);
         if let Some(echo) = &sink.echo {
-            echo.line(text.trim_end_matches(['\n', '\r']), to_stderr);
+            echo.line(line, to_stderr);
+        }
+        if let Some(task) = &sink.events {
+            report::event_output(task, line, to_stderr);
         }
     }
 }
@@ -334,6 +378,14 @@ pub struct ExecutorConfig {
     pub run_start: Instant,
     /// After a failure, let tasks that do not depend on it finish
     pub keep_going: bool,
+    /// Report each finished task and the summary in the `--agent` form
+    pub agent: bool,
+    /// Report the run as `--ndjson` events
+    pub ndjson: bool,
+    /// Lines of each task's output the agent and JSON reports keep
+    pub tail: Option<usize>,
+    /// Where each task's whole output is written, if anywhere
+    pub log_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for ExecutorConfig {
@@ -350,6 +402,10 @@ impl Default for ExecutorConfig {
             trace_io: false,
             run_start: Instant::now(),
             keep_going: false,
+            agent: false,
+            ndjson: false,
+            tail: None,
+            log_dir: None,
         }
     }
 }
@@ -419,6 +475,9 @@ impl Executor {
             .filter(|t| !is_aggregate(t))
             .map(|t| t.name.as_str())
             .collect();
+        if self.exec_config.ndjson {
+            report::event_run_start(&runnable);
+        }
         let name_width = runnable.iter().map(|n| n.len()).max().unwrap_or(0);
         let prefixed = runnable.len() > 1;
 
@@ -529,20 +588,25 @@ impl Executor {
                     continue;
                 }
             };
-            let Some(result) =
+            let Some(mut result) =
                 joined.map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))??
             else {
                 continue;
             };
 
             let finished = result.name.clone();
-            let failed = !result.success
-                && !result.cancelled
-                && !graph
+            let errored = !result.success && !result.cancelled;
+            result.allowed_failure = errored
+                && graph
                     .get_task(&finished)
                     .is_some_and(|t| t.config.allow_failure);
+            let failed = errored && !result.allowed_failure;
 
-            if !self.exec_config.json && (failed || !self.exec_config.quiet) {
+            if self.exec_config.agent {
+                report::agent_task(&result, self.exec_config.tail.unwrap_or(report::AGENT_TAIL));
+            } else if self.exec_config.ndjson {
+                report::event_task_finish(&result, self.exec_config.tail);
+            } else if !self.exec_config.json && (failed || !self.exec_config.quiet) {
                 Self::print_task_result(&result);
             }
             if failed {
@@ -568,11 +632,13 @@ impl Executor {
             );
         }
 
-        if !self.exec_config.json && !self.exec_config.quiet {
-            let planned = in_degree
-                .keys()
-                .filter(|name| !graph.get_task(name).is_some_and(is_aggregate))
-                .count();
+        let planned = in_degree
+            .keys()
+            .filter(|name| !graph.get_task(name).is_some_and(is_aggregate))
+            .count();
+        if self.exec_config.agent {
+            report::agent_summary(&all_results[first..], planned, started.elapsed());
+        } else if !self.exec_config.json && !self.exec_config.quiet {
             self.print_summary(&all_results[first..], planned, started.elapsed());
         }
         if let Some(signal) = interrupted {
@@ -653,10 +719,16 @@ impl Executor {
             pb
         });
 
-        let result = Self::execute_single_task(task, config, exec_config, cache, run).await;
+        if exec_config.ndjson {
+            report::event_task_start(&task.name);
+        }
+        let mut result = Self::execute_single_task(task, config, exec_config, cache, run).await;
 
         if let Some(pb) = pb {
             pb.finish_and_clear();
+        }
+        if let (Some(dir), Ok(result)) = (&exec_config.log_dir, &mut result) {
+            result.log = report::write_log(dir, &exec_config.cwd, result);
         }
         result
     }
@@ -707,16 +779,39 @@ impl Executor {
         (node_map, in_degree, dependents)
     }
 
-    fn dep_fingerprints(graph: &TaskGraph, name: &str, fingerprints: &Fingerprints) -> Vec<String> {
+    /// Each dependency of `name` with its fingerprint.
+    fn dep_fingerprints(
+        graph: &TaskGraph,
+        name: &str,
+        fingerprints: &Fingerprints,
+    ) -> Vec<(String, String)> {
         let deps = graph.dependencies(name).unwrap_or_default();
         fingerprints.lock().map_or_else(
             |_| Vec::new(),
             |f| {
                 deps.iter()
-                    .map(|d| f.get(*d).cloned().unwrap_or_else(|| (*d).to_string()))
+                    .map(|d| ((*d).to_string(), Self::fingerprint_of(graph, d, &f)))
                     .collect()
             },
         )
+    }
+
+    /// The fingerprint of a finished dependency. An aggregate never runs, so
+    /// it has none recorded and is made up from its own dependencies.
+    fn fingerprint_of(graph: &TaskGraph, name: &str, known: &HashMap<String, String>) -> String {
+        if let Some(fingerprint) = known.get(name) {
+            return fingerprint.clone();
+        }
+        if !graph.get_task(name).is_some_and(is_aggregate) {
+            return name.to_string();
+        }
+        let deps: Vec<String> = graph
+            .dependencies(name)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| Self::fingerprint_of(graph, d, known))
+            .collect();
+        Cache::aggregate_fingerprint(name, &deps)
     }
 
     fn record_fingerprint(
@@ -767,10 +862,20 @@ impl Executor {
 
         let cwd = Self::task_cwd(task, exec_config)?;
 
-        let key = cache
-            .map(|_| Cache::compute_key(&task.name, &task.config, config, run.dep_keys, &cwd))
+        let inputs = cache
+            .map(|_| Cache::key_inputs(&task.name, &task.config, config, run.dep_keys, &cwd))
             .transpose()?;
+        let key = inputs.as_ref().map(|i| i.key.clone());
         let cacheable = Cache::caches(&task.config);
+        let status = if cache.is_none() {
+            CacheStatus::Disabled
+        } else if !cacheable || task.config.foreground {
+            CacheStatus::Uncacheable
+        } else if exec_config.force {
+            CacheStatus::Forced
+        } else {
+            CacheStatus::Miss
+        };
         let record_fingerprint =
             || Self::record_fingerprint(run.fingerprints, task, key.as_deref(), &cwd);
 
@@ -793,6 +898,10 @@ impl Executor {
                             error: None,
                             exit_code: None,
                             cancelled: false,
+                            cache: CacheStatus::Hit,
+                            command: None,
+                            allowed_failure: false,
+                            log: None,
                         });
                     }
                 }
@@ -814,6 +923,7 @@ impl Executor {
             sink: Sink {
                 capture: Capture::default(),
                 echo: run.echo,
+                events: (exec_config.ndjson && exec_config.verbose).then(|| task.name.clone()),
             },
             cancel: run.cancel,
             shell: config.settings.shell.clone(),
@@ -827,6 +937,13 @@ impl Executor {
 
         let duration = start.elapsed();
         record_fingerprint();
+        if let (Some(cache), Some(inputs), CacheStatus::Miss | CacheStatus::Forced) =
+            (cache, &inputs, status)
+        {
+            if !matches!(result, Err(YatrError::Cancelled)) {
+                cache.record_inputs(&task.name, inputs, &cwd, result.is_ok());
+            }
+        }
 
         // IO tracing: report files written outside the declared `outputs`.
         if let Some(before) = trace_before {
@@ -855,6 +972,10 @@ impl Executor {
                     error: None,
                     exit_code: None,
                     cancelled: false,
+                    cache: status,
+                    command: None,
+                    allowed_failure: false,
+                    log: None,
                 })
             }
             Err(e) => Ok(TaskResult {
@@ -867,6 +988,13 @@ impl Executor {
                 exit_code: Some(i32::from(e.exit_code())),
                 cancelled: matches!(e, YatrError::Cancelled),
                 error: Some(e.to_string()),
+                cache: status,
+                command: match &e {
+                    YatrError::CommandFailed { command, .. } => Some(command.clone()),
+                    _ => None,
+                },
+                allowed_failure: false,
+                log: None,
             }),
         }
     }
