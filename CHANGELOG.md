@@ -6,6 +6,10 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A shell task that leaves a process in the background (`server & run-tests`) ends when its command exits, rather than when that process does. yatr reads what was already written, stops reading, and warns if the background process still holds the task's output (#54).
+
 ## [1.4.0] - 2026-11-14
 
 yatr for coding agents: a report that fits a context window, a command that explains the cache, one that tells an agent the tasks exist, and an MCP server. See **Fixed** if a task of yours depends on an aggregate.

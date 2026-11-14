@@ -80,6 +80,10 @@ impl CacheStatus {
 /// How long a cancelled task gets between SIGTERM and SIGKILL.
 const KILL_GRACE: Duration = Duration::from_secs(3);
 
+/// How long a command's output is read after the command exits. A process it
+/// left in the background can hold the pipes open for as long as it lives.
+const OUTPUT_GRACE: Duration = Duration::from_millis(250);
+
 /// Everything a task printed, stdout and stderr together.
 #[derive(Clone, Default)]
 struct Capture(Arc<std::sync::Mutex<String>>);
@@ -1221,7 +1225,19 @@ impl Executor {
         };
         let finished = async {
             let status = child.wait().await;
-            while pumps.join_next().await.is_some() {}
+            let drained = tokio::time::timeout(OUTPUT_GRACE, async {
+                while pumps.join_next().await.is_some() {}
+            })
+            .await;
+            if drained.is_err() {
+                pumps.abort_all();
+                errln!(
+                    "{} task '{}': a process it left in the background still holds its \
+                     output, which is no longer read. Redirect that process's output to keep it",
+                    style("warning:").yellow().bold(),
+                    ctx.task
+                );
+            }
             status
         };
         let stop = tokio::select! {

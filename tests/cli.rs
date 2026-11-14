@@ -1299,3 +1299,38 @@ fn dry_run_plan_shows_run_modes() {
         "--shell not shown"
     );
 }
+
+/// A task ends when its command does, not when a background child that
+/// inherited its output exits.
+#[cfg(unix)]
+#[test]
+fn background_child_does_not_hold_task() {
+    let start = std::time::Instant::now();
+    let (_dir, out) = run_in(
+        "[tasks.bg]\nshell = true\nno_cache = true\nrun = [\"sleep 8 & echo test ran\"]\n",
+        &["bg"],
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(4),
+        "held for {:?}",
+        start.elapsed()
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("test ran"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("still holds"), "{stderr}");
+}
+
+/// A background child whose output is redirected leaves nothing to warn about.
+#[cfg(unix)]
+#[test]
+fn redirected_background_child_is_quiet() {
+    let (_dir, out) = run_in(
+        "[tasks.bg]\nshell = true\nno_cache = true\nrun = [\"sleep 3 >/dev/null 2>&1 & echo ok\"]\n",
+        &["bg"],
+    );
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("still holds"), "{stderr}");
+}
