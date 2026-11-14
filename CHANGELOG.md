@@ -6,6 +6,10 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-13
+
+Status and summary lines move to stderr; see **Changed** if anything reads yatr's stdout.
+
 ### Added
 
 - A `tool_inputs` task key names commands, such as `nuthatch --version`, whose stdout is a cache input, so upgrading a tool re-runs the tasks that use it. Each command runs once per invocation (#46).
