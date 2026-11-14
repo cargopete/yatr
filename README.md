@@ -257,6 +257,9 @@ Commands:
   schema   Print the JSON Schema for yatr.toml
   affected List tasks affected by changes since a git ref
   lsp      Run the yatr.toml language server (LSP over stdio)
+  explain  Say whether a task would run or come from cache, and why
+  agents   Print or update the AGENTS.md section describing the tasks
+  mcp      Run a Model Context Protocol server over stdio
 
 Options:
   -c, --config <PATH>  Config file path
@@ -307,6 +310,14 @@ yatr cache path              # Show cache directory
 # Machine-readable output
 yatr run --json test         # Structured JSON: per-task results + summary
 yatr run --json --dry-run ci # JSON execution plan, without running
+yatr run --json --tail 40 ci # Keep each task's last 40 lines; the rest goes to .yatr/logs/
+yatr run --ndjson ci         # One JSON event per line as the run progresses
+
+# Coding agents
+yatr run --agent ci          # One line per task; a failure adds its command and output tail
+yatr explain build           # Would it run or come from cache, and which inputs changed
+yatr agents --write          # Write the tasks into AGENTS.md
+yatr mcp                     # MCP server over stdio
 
 # Profiling
 yatr run --profile trace.json ci   # Chrome trace of the run (chrome://tracing / Perfetto)
@@ -521,6 +532,48 @@ type) and a **task outline**. Point your editor's LSP client at `yatr lsp` for
 vim.lsp.start({ name = "yatr", cmd = { "yatr", "lsp" },
                 root_dir = vim.fn.getcwd() })
 ```
+
+## Coding agents
+
+An agent runs tasks the way a person does, with two differences: it pays for
+every line it reads, and it cannot scroll back. `--agent` is the report for that
+reader:
+
+```console
+$ yatr run --agent ci
+ok   fmt-check (cached)
+ok   lint 12.31s
+FAIL test 48.10s: exit 101 from `cargo nextest run --locked`
+--- test: last 40 of 1832 lines, full log: .yatr/logs/test.log ---
+…the last 40 lines of what the task printed…
+--- end test ---
+FAILED: 1 failed, 2 ok (1 cached), 60.42s
+rerun: yatr run --agent test
+```
+
+A pass is one line. A failure adds the command that failed, its exit code and
+the tail of its output (`--tail <LINES>`, 40 by default); the whole of it is in
+`.yatr/logs/<task>.log`, a directory that ignores itself. `YATR_AGENT=1` selects
+the report without the flag.
+
+Beside it:
+
+- **`yatr agents --write`** puts a section in `AGENTS.md`, generated from
+  `yatr.toml`: how to run tasks, the gate to run before calling work done, and a
+  table of every task. `yatr agents --check` fails when it has drifted. An agent
+  uses the tasks it is told about, and is otherwise inclined to call `cargo`
+  itself.
+- **`yatr explain <task>`** says whether a task would run or be restored from
+  cache, and names the inputs that changed: which source files, which
+  dependency, which environment variable.
+- **`--json`** reports errors as JSON too, with near misses for a mistyped task
+  name; `--tail` bounds each task's output; **`--ndjson`** streams the run as
+  events. `yatr list --format json` describes every task.
+- **`yatr mcp`** serves `list`, `run`, `explain`, `affected` and `check` as
+  tools over the Model Context Protocol, for clients without a shell:
+  `claude mcp add yatr -- yatr mcp`.
+
+The details are in the book, under [Coding agents](docs/book/src/agents.md).
 
 ## Showcases
 

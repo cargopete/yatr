@@ -10,5 +10,6 @@
 - [Toolchains](./toolchains.md)
 - [WASM plugins](./plugins.md)
 - [Editor integration](./editor.md)
+- [Coding agents](./agents.md)
 - [Benchmarks](./benchmarks.md)
 - [CLI reference](./cli.md)

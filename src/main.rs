@@ -25,17 +25,21 @@ use console::style;
 use miette::IntoDiagnostic;
 
 mod affected;
+mod agents;
 mod cache;
 mod cli;
 mod config;
 mod error;
 mod executor;
+mod explain;
 mod globs;
 mod graph;
 mod lsp;
+mod mcp;
 mod output;
 mod reapi;
 mod remote;
+mod report;
 mod script;
 mod toolchain;
 mod trace;
@@ -43,12 +47,15 @@ mod wasm;
 mod watch;
 
 use cache::Cache;
-use cli::{CacheCommands, Cli, Commands, EffectiveCommand, GraphFormat, ListFormat, RunArgs};
+use cli::{
+    CacheCommands, Cli, Commands, EffectiveCommand, ExplainFormat, GraphFormat, ListFormat, RunArgs,
+};
 use config::Config;
 use error::{Result, YatrError};
 use executor::{Executor, ExecutorConfig, TaskResult};
 use graph::TaskGraph;
 use output::{errln, out, outln};
+use report::Mode;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -64,7 +71,7 @@ async fn main() -> ExitCode {
         .without_time()
         .init();
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(args_with_tasks_first());
 
     // Handle --no-color
     if cli.no_color {
@@ -72,15 +79,102 @@ async fn main() -> ExitCode {
         console::set_colors_enabled_stderr(false);
     }
 
+    let mode = report_mode(&cli);
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // Render via miette for a clean message + diagnostic code/help,
-            // rather than the raw `{:?}` struct debug.
             let code = e.exit_code();
-            errln!("{:?}", miette::Report::new(e));
+            // A JSON reader gets the error as JSON, unless the run's own
+            // document already carries it.
+            if matches!(mode, Mode::Json | Mode::Ndjson) && !report::emitted() {
+                report::error_document(&e, mode);
+            }
+            // The agent report has already said which tasks failed and why.
+            if !(mode == Mode::Agent && e.is_task_failure()) {
+                // Render via miette for a clean message + diagnostic code/help,
+                // rather than the raw `{:?}` struct debug.
+                errln!("{:?}", miette::Report::new(e));
+            }
             ExitCode::from(code)
         }
+    }
+}
+
+/// The command line as clap should see it. Clap only takes a subcommand as
+/// the first argument, so two things are put right here:
+///
+/// - `yatr -q list` has its subcommand moved to the front. It used to fail
+///   looking for a task called `list`; where there is such a task, that is
+///   still what runs.
+/// - A task named after a subcommand added since 1.0 gets `run` put in front,
+///   so `yatr <task>` goes on reaching the task as it did before.
+fn args_with_tasks_first() -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let Some(at) = cli::first_positional(&args) else {
+        return args;
+    };
+    let name = args[at].to_string_lossy().into_owned();
+    let yields = cli::YIELDING_BUILTINS.contains(&name.as_str());
+    if !cli::subcommand_names().contains(&name) || (at == 1 && !yields) {
+        return args;
+    }
+
+    // Only the options ahead of the name can say where the config is.
+    let option = |names: [&str; 2]| {
+        args[..at].iter().enumerate().find_map(|(i, arg)| {
+            let arg = arg.to_str()?;
+            if names.contains(&arg) {
+                return args.get(i + 1).map(std::path::PathBuf::from);
+            }
+            let (flag, value) = arg.split_once('=')?;
+            names.contains(&flag).then(|| value.into())
+        })
+    };
+    let config = option(["-c", "--config"]);
+    let config = match (option(["--cwd", "--cwd"]), config) {
+        (Some(cwd), Some(config)) => Some(cwd.join(config)),
+        (Some(cwd), None) => config::CONFIG_FILES
+            .iter()
+            .map(|name| cwd.join(name))
+            .find(|path| path.exists()),
+        (None, config) => config,
+    };
+    let is_task =
+        Config::load(config.as_deref()).is_ok_and(|(config, _)| config.tasks.contains_key(&name));
+
+    if is_task && yields {
+        args.insert(1, "run".into());
+    } else if !is_task && at > 1 {
+        let subcommand = args.remove(at);
+        args.insert(1, subcommand);
+    }
+    args
+}
+
+/// How errors are reported: as JSON to a command that was asked for JSON.
+fn report_mode(cli: &Cli) -> Mode {
+    match cli.effective_command() {
+        EffectiveCommand::RunTasks(_, opts)
+        | EffectiveCommand::Subcommand(Commands::Run { opts, .. }) => opts.mode(),
+        EffectiveCommand::Subcommand(
+            Commands::List {
+                format: ListFormat::Json,
+                ..
+            }
+            | Commands::Affected {
+                format: ListFormat::Json,
+                ..
+            }
+            | Commands::Graph {
+                format: GraphFormat::Json,
+                ..
+            }
+            | Commands::Explain {
+                format: ExplainFormat::Json,
+                ..
+            },
+        ) => Mode::Json,
+        _ => Mode::Human,
     }
 }
 
@@ -160,6 +254,14 @@ async fn run_command(cmd: &Commands, cli: &Cli) -> Result<()> {
         }
 
         Commands::Affected { git_ref, format } => run_affected_command(git_ref, format, cli),
+
+        Commands::Explain { task, format } => run_explain_command(task, format, cli),
+
+        Commands::Agents { write, check, file } => {
+            run_agents_command(*write, *check, file.as_deref(), cli)
+        }
+
+        Commands::Mcp => mcp::serve(cli.config.clone()).await,
 
         // The LSP runs a synchronous stdio loop; keep it off the async executor.
         Commands::Lsp => tokio::task::block_in_place(lsp::run),
@@ -331,6 +433,104 @@ fn check_task(
     }
 }
 
+/// The local cache a run of `config` uses, with its remote and signing key.
+fn open_cache(config: &Config) -> Result<Cache> {
+    let remote_cfg = config.settings.remote_cache.as_ref();
+    let remote = match remote_cfg {
+        Some(rc) => Some(remote::RemoteCache::from_config(rc)?),
+        None => None,
+    };
+    let signing_key = remote_cfg
+        .and_then(|rc| rc.sign_key_env.as_ref())
+        .and_then(|var| std::env::var(var).ok())
+        .map(|secret| cache::Cache::derive_key(&secret));
+    Ok(cache::Cache::new(config.settings.cache_dir.clone())?
+        .with_remote(remote)
+        .with_signing_key(signing_key))
+}
+
+fn run_explain_command(task: &str, format: &ExplainFormat, cli: &Cli) -> Result<()> {
+    let (config, _) = Config::load(cli.config.as_deref())?;
+    let graph = TaskGraph::from_config(&config)?;
+    let cache = if config.settings.cache {
+        Some(open_cache(&config)?)
+    } else {
+        None
+    };
+    let explained = explain::explain(
+        task,
+        &config,
+        &graph,
+        cache.as_ref(),
+        &std::env::current_dir()?,
+    )?;
+    match format {
+        ExplainFormat::Text => out!("{}", explain::render(&explained)),
+        ExplainFormat::Json => print_json(&serde_json::json!({
+            "task": task,
+            "tasks": explained,
+        }))?,
+    }
+    Ok(())
+}
+
+fn run_agents_command(
+    write: bool,
+    check: bool,
+    file: Option<&std::path::Path>,
+    cli: &Cli,
+) -> Result<()> {
+    let (config, config_path) = Config::load(cli.config.as_deref())?;
+    let graph = TaskGraph::from_config(&config)?;
+    let config_name = config_path
+        .file_name()
+        .map_or_else(|| "yatr.toml".into(), |n| n.to_string_lossy().into_owned());
+    let root = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    // No FILE means AGENTS.md beside the config, wherever yatr was started.
+    let path = file.map_or_else(|| root.join("AGENTS.md"), std::path::Path::to_path_buf);
+    // The section names its own file, relative to the config, unless it is
+    // the default.
+    let named = std::path::absolute(&path)
+        .ok()
+        .and_then(|p| p.strip_prefix(root).ok().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| path.clone());
+    let named = named.to_string_lossy().replace('\\', "/");
+    let section = agents::section(
+        &config,
+        &graph,
+        &config_name,
+        (file.is_some() && named != "AGENTS.md").then_some(named.as_str()),
+    );
+    if !write && !check {
+        out!("{section}");
+        return Ok(());
+    }
+
+    let path = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            path.strip_prefix(cwd)
+                .ok()
+                .map(std::path::Path::to_path_buf)
+        })
+        .unwrap_or(path);
+    if check {
+        agents::check(&path, &section)?;
+        errln!("{} {} is up to date", style("✓").green(), path.display());
+    } else {
+        let changed = agents::write(&path, &section)?;
+        errln!(
+            "{} {} {}",
+            style("✓").green(),
+            if changed { "Wrote" } else { "No change to" },
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// The directory yatr was started in, in the canonical form config paths use.
 fn run_affected_command(git_ref: &str, format: &ListFormat, cli: &Cli) -> Result<()> {
     let (config, config_path) = Config::load(cli.config.as_deref())?;
@@ -381,6 +581,7 @@ async fn apply_toolchains(config: &mut Config) -> Result<()> {
 }
 
 async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
+    let mode = opts.mode();
     let (mut config, config_path) = Config::load(cli.config.as_deref())?;
     let mut graph = TaskGraph::from_config(&config)?;
     graph.execution_order_all(tasks)?;
@@ -391,7 +592,9 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     let tasks: &[String] = if let Some(git_ref) = &opts.affected {
         let set = affected::detect(git_ref, &config, &config_path, &graph)?.tasks;
         filtered = tasks.iter().filter(|t| set.contains(*t)).cloned().collect();
-        if filtered.is_empty() && !opts.json && !cli.quiet {
+        if filtered.is_empty() && mode == Mode::Agent {
+            outln!("OK: none of the requested tasks is affected since {git_ref}");
+        } else if filtered.is_empty() && mode == Mode::Human && !cli.quiet {
             errln!(
                 "{} No requested tasks affected since {git_ref} — nothing to do",
                 style("✓").green()
@@ -412,7 +615,7 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     }
 
     // JSON dry-run: emit the execution plan rather than running anything.
-    if opts.json && opts.dry_run {
+    if matches!(mode, Mode::Json | Mode::Ndjson) && opts.dry_run {
         let mut plan = Vec::new();
         for task in tasks {
             let order: Vec<&str> = graph
@@ -427,23 +630,22 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     }
 
     let cache = if config.settings.cache && !opts.dry_run {
-        let remote_cfg = config.settings.remote_cache.as_ref();
-        let remote = match remote_cfg {
-            Some(rc) => Some(remote::RemoteCache::from_config(rc)?),
-            None => None,
-        };
-        let signing_key = remote_cfg
-            .and_then(|rc| rc.sign_key_env.as_ref())
-            .and_then(|var| std::env::var(var).ok())
-            .map(|secret| cache::Cache::derive_key(&secret));
-        Some(
-            cache::Cache::new(config.settings.cache_dir.clone())?
-                .with_remote(remote)
-                .with_signing_key(signing_key),
-        )
+        Some(open_cache(&config)?)
     } else {
         None
     };
+
+    // The reports that shorten a task's output keep the whole of it on disk.
+    let tail = opts
+        .tail
+        .or_else(|| (mode == Mode::Agent).then_some(report::AGENT_TAIL));
+    let log_dir = (tail.is_some() && mode != Mode::Human && !opts.dry_run)
+        .then(|| {
+            config_path
+                .parent()
+                .map(|dir| dir.join(".yatr").join("logs"))
+        })
+        .flatten();
 
     let exec_config = ExecutorConfig {
         parallelism: opts.parallel,
@@ -453,10 +655,15 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
         shell: opts.shell,
         verbose: cli.verbose,
         quiet: cli.quiet,
-        json: opts.json,
+        // A dry run prints its plan as text for an agent, as for a person.
+        json: mode != Mode::Human && !(mode == Mode::Agent && opts.dry_run),
         trace_io: opts.trace_io,
         keep_going: opts.keep_going,
         run_start: std::time::Instant::now(),
+        agent: mode == Mode::Agent,
+        ndjson: mode == Mode::Ndjson,
+        tail,
+        log_dir,
     };
 
     let executor = Executor::new(config, exec_config, cache);
@@ -467,12 +674,14 @@ async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
         executor.execute_into(&graph, tasks, &mut all_results).await
     };
 
-    if opts.json {
-        print_run_json(&all_results)?;
+    match mode {
+        Mode::Json => report::run_document(&all_results, tail, outcome.as_ref().err()),
+        Mode::Ndjson => report::event_run_finish(&all_results, outcome.as_ref().err()),
+        Mode::Agent | Mode::Human => {}
     }
     if let Some(path) = &opts.profile {
         write_profile(&all_results, path)?;
-        if !opts.json && !cli.quiet {
+        if mode == Mode::Human && !cli.quiet {
             errln!("{} Wrote trace to {}", style("⏱").cyan(), path.display());
         }
     }
@@ -510,45 +719,6 @@ fn write_profile(results: &[TaskResult], path: &std::path::Path) -> Result<()> {
         .map_err(|e| YatrError::Io(std::io::Error::other(e.to_string())))?;
     std::fs::write(path, text)?;
     Ok(())
-}
-
-/// Serialize a run's task results into the structured `--json` document.
-fn print_run_json(results: &[TaskResult]) -> Result<()> {
-    let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-
-    let tasks: Vec<_> = results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "success": r.success,
-                "cached": r.cached,
-                "duration_ms": ms(r.duration),
-                "output": r.output,
-                "error": r.error,
-                "exit_code": r.exit_code,
-                "cancelled": r.cancelled,
-            })
-        })
-        .collect();
-
-    let doc = serde_json::json!({
-        "tasks": tasks,
-        "summary": {
-            "succeeded": results.iter().filter(|r| r.success).count(),
-            "failed": results.iter().filter(|r| !r.success && !r.cancelled).count(),
-            "cancelled": results.iter().filter(|r| r.cancelled).count(),
-            "cached": results.iter().filter(|r| r.cached).count(),
-            "duration_ms": results
-                .iter()
-                .map(|r| ms(r.start_offset + r.duration))
-                .max()
-                .unwrap_or_default()
-                .saturating_sub(results.iter().map(|r| ms(r.start_offset)).min().unwrap_or_default()),
-        }
-    });
-
-    print_json(&doc)
 }
 
 /// Print a JSON value to stdout, pretty-printed.
@@ -654,15 +824,35 @@ fn print_task_list(graph: &TaskGraph, config: &Config, format: &ListFormat, show
             let mut tasks = serde_json::Map::new();
             for name in graph.task_names() {
                 if let Some(task) = graph.get_task(name) {
+                    let t = &task.config;
+                    let kind = if t.wasm.is_some() {
+                        "wasm"
+                    } else if t.script.is_some() {
+                        "script"
+                    } else if t.run.is_empty() {
+                        "aggregate"
+                    } else {
+                        "commands"
+                    };
                     let mut obj = serde_json::Map::new();
-                    if let Some(desc) = &task.config.desc {
+                    if let Some(desc) = &t.desc {
                         obj.insert("description".to_string(), serde_json::json!(desc));
                     }
-                    if show_deps {
-                        if let Some(deps) = graph.dependencies(name) {
-                            obj.insert("depends".to_string(), serde_json::json!(deps));
-                        }
-                    }
+                    obj.insert(
+                        "depends".to_string(),
+                        serde_json::json!(graph.dependencies(name).unwrap_or_default()),
+                    );
+                    obj.insert("kind".to_string(), serde_json::json!(kind));
+                    obj.insert("run".to_string(), serde_json::json!(t.run));
+                    obj.insert(
+                        "cached".to_string(),
+                        serde_json::json!(
+                            config.settings.cache && Cache::caches(t) && !t.foreground
+                        ),
+                    );
+                    obj.insert("foreground".to_string(), serde_json::json!(t.foreground));
+                    obj.insert("sources".to_string(), serde_json::json!(t.sources));
+                    obj.insert("outputs".to_string(), serde_json::json!(t.outputs));
                     tasks.insert(name.to_string(), serde_json::Value::Object(obj));
                 }
             }

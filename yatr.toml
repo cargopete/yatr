@@ -11,24 +11,39 @@ watch_debounce_ms = 200
 # Development tasks
 # ─────────────────────────────────────────────────────────────
 
+# `yatr ci` is what .github/workflows/ci.yml runs on its Linux leg, plus the
+# AGENTS.md check. The audit job is `yatr audit`: advisories arrive without the
+# tree changing, so it is not part of a cached gate.
+
 [tasks.fmt]
 desc = "Format code"
-run = ["cargo fmt"]
+run = ["cargo fmt --all"]
+no_cache = true
+
+[tasks.fmt-check]
+desc = "Fail if the tree is unformatted"
+run = ["cargo fmt --all --check"]
+sources = ["**/*.rs"]
 
 [tasks.lint]
-desc = "Run clippy"
-run = ["cargo clippy -- -D warnings -D clippy::unwrap_used"]
-depends = ["fmt"]
+desc = "Run clippy (advisory, as in CI: warnings are printed, not denied)"
+run = ["cargo clippy --all-targets --locked"]
+sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml"]
 
 [tasks.test]
 desc = "Run tests"
-run = ["cargo test"]
-sources = ["src/**/*.rs", "Cargo.toml"]
+run = ["cargo test --locked"]
+sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "yatr.schema.json"]
 watch = ["src/**/*.rs", "tests/**/*.rs"]
 
+[tasks.agents-check]
+desc = "Fail if AGENTS.md has drifted from the tasks in this file"
+run = ["cargo run --quiet --locked -- agents --check"]
+sources = ["yatr.toml", "AGENTS.md", "src/**/*.rs", "Cargo.lock"]
+
 [tasks.ci]
-desc = "Full CI check (fmt, lint, test)"
-depends = ["fmt", "lint", "test"]
+desc = "What CI runs: fmt-check, lint, test, and the AGENTS.md check"
+depends = ["fmt-check", "lint", "test", "agents-check"]
 run = []
 
 # ─────────────────────────────────────────────────────────────
@@ -52,12 +67,15 @@ outputs = ["target/release/yatr"]
 # ─────────────────────────────────────────────────────────────
 
 [tasks.doc]
-desc = "Generate documentation"
+desc = "Generate documentation and open it"
 run = ["cargo doc --no-deps --open"]
+no_cache = true
 
 [tasks.readme]
 desc = "Check README code examples"
 run = ["cargo readme > /dev/null"]
+shell = true
+no_cache = true
 allow_failure = true
 
 # ─────────────────────────────────────────────────────────────
@@ -139,6 +157,7 @@ script = '''
 [tasks.publish-dry]
 desc = "Dry-run publish to crates.io"
 depends = ["ci"]
+no_cache = true
 run = ["cargo publish --dry-run"]
 
 [tasks.publish]
@@ -153,10 +172,11 @@ run = ["cargo publish"]
 
 [tasks.dev]
 desc = "Run in watch mode during development"
-no_cache = true
+foreground = true
 run = ["cargo watch -x 'test' -x 'clippy'"]
 
 [tasks.install-local]
 desc = "Install yatr locally from source"
 depends = ["release"]
+no_cache = true
 run = ["cargo install --path ."]

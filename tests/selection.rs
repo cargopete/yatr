@@ -42,15 +42,19 @@ fn run_flags_before_shorthand_task_apply_to_the_run() {
     assert!(!dir.path().join("DEPLOYED").exists(), "dry run executed");
 }
 
-/// A top-level run flag in front of a subcommand would be silently ignored.
+/// A run flag in front of `run` applies to it, and is never silently dropped;
+/// in front of a subcommand that does not take it, it is a usage error.
 #[test]
-fn run_flags_before_a_subcommand_are_rejected() {
+fn run_flags_before_a_subcommand_are_not_ignored() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("yatr.toml"), DEPLOY).unwrap();
 
     let out = yatr(dir.path(), &["--dry-run", "run", "deploy"]);
-    assert!(!out.status.success());
-    assert!(!dir.path().join("DEPLOYED").exists());
+    assert!(out.status.success());
+    assert!(!dir.path().join("DEPLOYED").exists(), "dry run executed");
+
+    let out = yatr(dir.path(), &["--dry-run", "list"]);
+    assert_eq!(out.status.code(), Some(2), "expected a clap usage error");
 }
 
 #[test]

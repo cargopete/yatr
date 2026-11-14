@@ -56,16 +56,19 @@
 )]
 
 pub mod affected;
+pub mod agents;
 pub mod cache;
 pub mod config;
 pub mod error;
 pub mod executor;
+pub mod explain;
 pub mod globs;
 pub mod graph;
 pub mod lsp;
 mod output;
 pub mod reapi;
 pub mod remote;
+pub mod report;
 pub mod script;
 pub mod toolchain;
 pub mod trace;
@@ -76,7 +79,7 @@ pub mod watch;
 pub use cache::Cache;
 pub use config::Config;
 pub use error::{Result, YatrError};
-pub use executor::{Executor, ExecutorConfig, TaskResult};
+pub use executor::{CacheStatus, Executor, ExecutorConfig, TaskResult};
 pub use graph::{ExecutionPlan, TaskGraph, TaskNode};
 pub use remote::RemoteCache;
 pub use script::ScriptEngine;

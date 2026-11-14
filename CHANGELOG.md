@@ -6,6 +6,30 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+yatr for coding agents: a report that fits a context window, a command that explains the cache, one that tells an agent the tasks exist, and an MCP server. See **Fixed** if a task of yours depends on an aggregate.
+
+### Added
+
+- `yatr run --agent` reports for a coding agent: one line per task, and for a failure the command that failed, its exit code and the last 40 lines of its output. `YATR_AGENT=1` selects it without the flag. The whole output of every task goes to `.yatr/logs/<task>.log`, a directory that ignores itself.
+- `--tail <LINES>` keeps the last lines of each task's output in `--agent`, `--json` and `--ndjson`. In JSON each task gains `output_lines`, `output_truncated` and `log`.
+- `yatr run --ndjson` streams the run as one JSON event per line: `run_start`, `task_start`, `task_finish`, `run_finish`, and with `-v` an `output` event per line a task prints.
+- A command asked for JSON reports its errors as JSON on stdout: `run --json`, `run --ndjson`, and `--format json` on `list`, `affected` and `graph`. A task that is not found carries `suggestions` and `available`, and the message names the near miss.
+- `yatr explain <task>` says whether a task and its dependencies would run or be restored from cache, and which inputs changed since each last ran, by kind and by name. `--format json` for the same as a document.
+- `yatr agents` prints the `AGENTS.md` section describing the project's tasks; `--write [FILE]` writes it in place between its markers, `--check [FILE]` fails when it is missing or stale.
+- `yatr mcp` runs a Model Context Protocol server over stdio, with `list`, `run`, `explain`, `affected` and `check` as tools.
+- The `run --json` document gains `ok` and, when the run failed, `error`; each task gains `cache` (`hit`, `miss`, `forced`, `uncacheable`, `disabled`), `command` and `allowed_failure`.
+- `yatr list --format json` gives each task's `depends`, `kind`, `run`, `sources`, `outputs`, `cached` and `foreground`.
+
+### Changed
+
+- A run flag ahead of `run` now applies to it: `yatr --dry-run run deploy` is a dry run, where it was an error.
+- A task named `explain`, `agents` or `mcp` is still what `yatr <name>` runs. The new subcommands yield to it, and `yatr check` says nothing about the name.
+
+### Fixed
+
+- An option ahead of a subcommand no longer turns the subcommand into a task name: `yatr -c ci.toml list` and `yatr -q run test` failed with "Task 'list' not found". Where a task does have that name, it is still what runs.
+- A task that depends on an aggregate (`run = []`) now re-runs when something behind the aggregate changes. Its key held only the aggregate's name, so it replayed a stale result. Such tasks miss once after upgrading.
+
 ## [1.3.0] - 2026-11-13
 
 Status and summary lines move to stderr; see **Changed** if anything reads yatr's stdout.

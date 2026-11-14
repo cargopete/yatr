@@ -82,6 +82,39 @@ struct SignedAc {
     result: ActionResult,
 }
 
+/// What a task's cache key was computed from: a digest per input, never the
+/// input itself. Kept from a task's last execution so `yatr explain` can say
+/// which input has changed since.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyInputs {
+    pub key: String,
+    /// The commands, script or plugin, with the declared `cwd` and shell mode
+    pub definition: String,
+    /// Declared environment, by variable name
+    pub env: BTreeMap<String, String>,
+    /// Pinned toolchains, by name
+    pub toolchains: BTreeMap<String, String>,
+    /// `env_inputs`, by variable name
+    pub env_inputs: BTreeMap<String, String>,
+    /// `tool_inputs`, by command
+    pub tool_inputs: BTreeMap<String, String>,
+    /// Dependency fingerprints, by task name
+    pub deps: BTreeMap<String, String>,
+    /// Declared `outputs` patterns
+    pub outputs: Vec<String>,
+    /// Source files, by path relative to the task's directory
+    pub sources: BTreeMap<String, String>,
+}
+
+/// The inputs a task last executed with in a directory, and how that went.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastRun {
+    pub task: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub success: bool,
+    pub inputs: KeyInputs,
+}
+
 /// Files matched by a set of `sources` patterns, paired with a per-pattern
 /// flag recording whether that pattern matched anything at all.
 type SourceMatches = (Vec<(String, PathBuf)>, Vec<bool>);
@@ -645,6 +678,7 @@ impl Cache {
         config: &TaskConfig,
         project: &Config,
         cwd: &Path,
+        seen: &mut BTreeMap<String, String>,
     ) -> Result<()> {
         if config.tool_inputs.is_empty() {
             return Ok(());
@@ -662,6 +696,7 @@ impl Cache {
                     })?;
             Self::update_field(hasher, cmd.as_bytes());
             Self::update_field(hasher, &stdout);
+            seen.insert(cmd.clone(), Self::digest(&stdout));
         }
         Ok(())
     }
@@ -682,19 +717,38 @@ impl Cache {
         deps: &[String],
         cwd: &Path,
     ) -> Result<String> {
+        let deps: Vec<(String, String)> = deps.iter().map(|d| (d.clone(), d.clone())).collect();
+        Self::key_inputs(task_name, config, project, &deps, cwd).map(|inputs| inputs.key)
+    }
+
+    /// As [`Cache::compute_key`], with dependencies given as `(name,
+    /// fingerprint)` and the digest of each input returned beside the key.
+    pub fn key_inputs(
+        task_name: &str,
+        config: &TaskConfig,
+        project: &Config,
+        deps: &[(String, String)],
+        cwd: &Path,
+    ) -> Result<KeyInputs> {
         let mut hasher = Hasher::new();
+        let mut inputs = KeyInputs::default();
 
         hasher.update(Self::KEY_VERSION);
         hasher.update(task_name.as_bytes());
 
+        let mut definition = Hasher::new();
+        let mut define = |bytes: &[u8]| {
+            hasher.update(bytes);
+            Self::update_field(&mut definition, bytes);
+        };
         for cmd in &config.run {
-            hasher.update(cmd.as_bytes());
+            define(cmd.as_bytes());
         }
         if let Some(script) = &config.script {
-            hasher.update(script.as_bytes());
+            define(script.as_bytes());
         }
         if let Some(wasm) = &config.wasm {
-            hasher.update(wasm.to_string_lossy().as_bytes());
+            define(wasm.to_string_lossy().as_bytes());
         }
 
         // The task's *declared* (relative) working directory and shell mode
@@ -702,9 +756,10 @@ impl Cache {
         // rather than the absolute one so keys are portable across machines —
         // a prerequisite for a shared remote cache.
         if let Some(rel) = &config.cwd {
-            hasher.update(rel.to_string_lossy().as_bytes());
+            define(rel.to_string_lossy().as_bytes());
         }
-        hasher.update(&[u8::from(config.shell.unwrap_or(false))]);
+        define(&[u8::from(config.shell.unwrap_or(false))]);
+        inputs.definition = definition.finalize().to_hex()[..16].to_string();
 
         // The environment the config declares: global `[env]` merged with the
         // task's own. Toolchain bin dirs are machine paths, so the pins below
@@ -715,11 +770,13 @@ impl Cache {
         for (k, v) in env_pairs {
             Self::update_field(&mut hasher, k.as_bytes());
             Self::update_field(&mut hasher, v.as_bytes());
+            inputs.env.insert(k.clone(), Self::digest(v.as_bytes()));
         }
 
         let mut toolchains: Vec<_> = project.toolchain.iter().collect();
         toolchains.sort_by_key(|(k, _)| *k);
         for (name, tc) in toolchains {
+            let mut pin = Hasher::new();
             for part in [
                 Some(name.as_str()),
                 Some(tc.version.as_str()),
@@ -727,8 +784,13 @@ impl Cache {
                 tc.bin.as_deref(),
                 tc.sha256.as_deref(),
             ] {
-                Self::update_field(&mut hasher, part.unwrap_or_default().as_bytes());
+                let part = part.unwrap_or_default().as_bytes();
+                Self::update_field(&mut hasher, part);
+                Self::update_field(&mut pin, part);
             }
+            inputs
+                .toolchains
+                .insert(name.clone(), pin.finalize().to_hex()[..16].to_string());
         }
 
         // Declared ambient inputs; unset hashes differently from empty.
@@ -736,21 +798,31 @@ impl Cache {
         env_inputs.sort();
         for name in &env_inputs {
             Self::update_field(&mut hasher, name.as_bytes());
-            match std::env::var_os(name) {
-                Some(v) => Self::update_field(&mut hasher, v.as_encoded_bytes()),
-                None => {
-                    hasher.update(&[0xff]);
-                }
-            }
+            let seen = if let Some(v) = std::env::var_os(name) {
+                Self::update_field(&mut hasher, v.as_encoded_bytes());
+                Self::digest(v.as_encoded_bytes())
+            } else {
+                hasher.update(&[0xff]);
+                "unset".to_string()
+            };
+            inputs.env_inputs.insert(name.clone(), seen);
         }
 
-        Self::hash_tool_inputs(&mut hasher, task_name, config, project, cwd)?;
+        Self::hash_tool_inputs(
+            &mut hasher,
+            task_name,
+            config,
+            project,
+            cwd,
+            &mut inputs.tool_inputs,
+        )?;
 
-        let mut deps = deps.to_vec();
-        deps.sort();
-        for dep in &deps {
-            Self::update_field(&mut hasher, dep.as_bytes());
+        let mut fingerprints: Vec<&str> = deps.iter().map(|(_, f)| f.as_str()).collect();
+        fingerprints.sort_unstable();
+        for fingerprint in fingerprints {
+            Self::update_field(&mut hasher, fingerprint.as_bytes());
         }
+        inputs.deps = deps.iter().cloned().collect();
 
         // Declared output patterns (sorted) — changing them changes the action.
         let mut outputs = config.outputs.clone();
@@ -758,14 +830,21 @@ impl Cache {
         for pattern in &outputs {
             hasher.update(pattern.as_bytes());
         }
+        inputs.outputs = outputs;
 
         // Contents of source files.
         if !config.sources.is_empty() {
-            let source_hash = Self::hash_sources(cwd, &config.sources)?;
+            let (source_hash, files) = Self::hash_sources(cwd, &config.sources)?;
             hasher.update(source_hash.as_bytes());
+            inputs.sources = files;
         }
 
-        Ok(hasher.finalize().to_hex()[..16].to_string())
+        inputs.key = hasher.finalize().to_hex()[..16].to_string();
+        Ok(inputs)
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex()[..16].to_string()
     }
 
     fn update_field(hasher: &mut Hasher, bytes: &[u8]) {
@@ -791,6 +870,23 @@ impl Cache {
                 .or_else(|_| std::fs::read(&path))
                 .unwrap_or_default();
             Self::update_field(&mut hasher, &content);
+        }
+        hasher.finalize().to_hex()[..16].to_string()
+    }
+
+    /// What a dependent folds into its key for an aggregate. An aggregate runs
+    /// nothing, so it stands for the fingerprints of what it depends on.
+    #[must_use]
+    pub fn aggregate_fingerprint(name: &str, deps: &[String]) -> String {
+        if deps.is_empty() {
+            return name.to_string();
+        }
+        let mut deps = deps.to_vec();
+        deps.sort();
+        let mut hasher = Hasher::new();
+        hasher.update(name.as_bytes());
+        for dep in &deps {
+            Self::update_field(&mut hasher, dep.as_bytes());
         }
         hasher.finalize().to_hex()[..16].to_string()
     }
@@ -923,18 +1019,21 @@ impl Cache {
 
     /// Hash the contents of source files matching the glob patterns, rooted at
     /// `cwd` and respecting `.gitignore` (so build artifacts and `node_modules`
-    /// don't bloat or destabilise the key).
-    fn hash_sources(cwd: &Path, patterns: &[String]) -> Result<String> {
+    /// don't bloat or destabilise the key). Returns the digest of each file
+    /// beside the hash of them all.
+    fn hash_sources(cwd: &Path, patterns: &[String]) -> Result<(String, BTreeMap<String, String>)> {
         let (files, _) = Self::collect_sources(cwd, patterns)?;
 
         let mut hasher = Hasher::new();
+        let mut digests = BTreeMap::new();
         for (rel, path) in files {
             hasher.update(rel.as_bytes());
             let content = std::fs::read(&path).unwrap_or_default();
             hasher.update(&content);
+            digests.insert(rel, Self::digest(&content));
         }
 
-        Ok(hasher.finalize().to_hex().to_string())
+        Ok((hasher.finalize().to_hex().to_string(), digests))
     }
 
     /// Capture the files matched by the output patterns into the CAS, with a
@@ -1148,10 +1247,75 @@ impl Cache {
 
     /// The canonical task directory and the action-cache directory scoped to it.
     fn ac_scope(&self, cwd: &Path) -> (PathBuf, PathBuf) {
-        let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-        let scope = &blake3::hash(dir.as_os_str().as_encoded_bytes()).to_hex()[..16];
+        let (dir, scope) = Self::scope(cwd);
         let scope_dir = self.dir.join("ac").join(scope);
         (dir, scope_dir)
+    }
+
+    /// The canonical form of a task directory and the name its entries are scoped under.
+    fn scope(cwd: &Path) -> (PathBuf, String) {
+        let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let scope = blake3::hash(dir.as_os_str().as_encoded_bytes()).to_hex()[..16].to_string();
+        (dir, scope)
+    }
+
+    /// Where the inputs of a task's last execution in `cwd` are kept. Beside
+    /// the action cache rather than in it, so its layout is unchanged.
+    fn last_run_path(&self, task_name: &str, cwd: &Path) -> PathBuf {
+        let name = &blake3::hash(task_name.as_bytes()).to_hex()[..32];
+        self.dir
+            .join("inputs")
+            .join(Self::scope(cwd).1)
+            .join(format!("{name}.json"))
+    }
+
+    /// Remember the inputs a task has just executed with. Best effort: a
+    /// failure to write costs `yatr explain` its detail and nothing else.
+    pub fn record_inputs(&self, task_name: &str, inputs: &KeyInputs, cwd: &Path, success: bool) {
+        if !self.enabled {
+            return;
+        }
+        let last = LastRun {
+            task: task_name.to_string(),
+            at: chrono::Utc::now(),
+            success,
+            inputs: inputs.clone(),
+        };
+        let path = self.last_run_path(task_name, cwd);
+        if let (Some(parent), Ok(bytes)) = (path.parent(), serde_json::to_vec(&last)) {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = Self::write_atomic(&path, &bytes);
+        }
+    }
+
+    /// The inputs `task_name` last executed with in `cwd`, if that is on record.
+    #[must_use]
+    pub fn last_run(&self, task_name: &str, cwd: &Path) -> Option<LastRun> {
+        let bytes = std::fs::read(self.last_run_path(task_name, cwd)).ok()?;
+        serde_json::from_slice::<LastRun>(&bytes)
+            .ok()
+            .filter(|last| last.task == task_name)
+    }
+
+    /// The local entry a run would restore for `key`, without restoring it.
+    /// `None` when there is none or one of its output blobs is missing.
+    #[must_use]
+    pub fn peek(&self, task_name: &str, key: &str, cwd: &Path) -> Option<ActionResult> {
+        if !self.enabled {
+            return None;
+        }
+        self.load_local_ac(key, task_name, cwd).filter(|result| {
+            result
+                .outputs
+                .iter()
+                .all(|o| self.cas_path(&o.blob).exists())
+        })
+    }
+
+    /// Whether a remote cache is consulted on a local miss.
+    #[must_use]
+    pub fn reads_remote(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.read)
     }
 
     /// Write an action-cache entry, recording which directory its scope
