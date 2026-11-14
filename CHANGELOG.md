@@ -6,6 +6,18 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `yatr <task> -- <args>` appends the args to the task's last command, each as one word, quoted for the shell in a `shell = true` task. One task only; the args are part of the cache key (#53).
+
+### Changed
+
+- Names after `--` in `yatr run -- <names>` are now arguments for the task, not task names. The MCP `run` tool, which used that form, refuses a task name starting with `-` instead.
+
+### Fixed
+
+- A quoted empty word in a non-shell command (`git commit -m ''`) is passed as an empty argument rather than dropped.
+
 ## [1.4.0] - 2026-11-14
 
 yatr for coding agents: a report that fits a context window, a command that explains the cache, one that tells an agent the tasks exist, and an MCP server. See **Fixed** if a task of yours depends on an aggregate.

@@ -496,10 +496,8 @@ fn mcp_server_lists_and_runs_tasks() {
     // A task name cannot smuggle an option in.
     let smuggled = &responses[&5]["result"];
     assert_eq!(smuggled["isError"], true);
-    assert_eq!(
-        smuggled["structuredContent"]["error"]["code"],
-        "yatr::task::not_found"
-    );
+    let text = smuggled["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("not valid"), "{text}");
 
     assert_eq!(
         responses[&6]["result"]["structuredContent"]["tasks"][0]["decision"],

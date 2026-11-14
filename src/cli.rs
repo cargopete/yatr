@@ -97,6 +97,10 @@ pub struct RunArgs {
     /// and `--agent`; the whole of it goes to `.yatr/logs/<task>.log`
     #[arg(long, value_name = "LINES")]
     pub tail: Option<usize>,
+
+    /// Arguments after `--`, appended to the last command of the one task named
+    #[arg(last = true, value_name = "ARGS")]
+    pub args: Vec<String>,
 }
 
 impl RunArgs {
