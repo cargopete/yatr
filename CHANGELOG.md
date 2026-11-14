@@ -6,6 +6,8 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-14
+
 yatr for coding agents: a report that fits a context window, a command that explains the cache, one that tells an agent the tasks exist, and an MCP server. See **Fixed** if a task of yours depends on an aggregate.
 
 ### Added
