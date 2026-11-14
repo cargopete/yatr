@@ -6,6 +6,10 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-14
+
+Arguments for a task, and a task that leaves a process in the background now ends. See **Changed** if anything runs `yatr run -- <names>`.
+
 ### Added
 
 - `yatr <task> -- <args>` appends the args to the task's last command, each as one word, quoted for the shell in a `shell = true` task. One task only; the args are part of the cache key (#53).
