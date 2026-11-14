@@ -17,6 +17,7 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A quoted empty word in a non-shell command (`git commit -m ''`) is passed as an empty argument rather than dropped.
+- A shell task that leaves a process in the background (`server & run-tests`) ends when its command exits, rather than when that process does. yatr reads what was already written, stops reading, and warns if the background process still holds the task's output (#54).
 
 ## [1.4.0] - 2026-11-14
 

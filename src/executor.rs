@@ -91,6 +91,10 @@ pub fn is_cmd(program: &str) -> bool {
 /// How long a cancelled task gets between SIGTERM and SIGKILL.
 const KILL_GRACE: Duration = Duration::from_secs(3);
 
+/// How long a command's output is read after the command exits. A process it
+/// left in the background can hold the pipes open for as long as it lives.
+const OUTPUT_GRACE: Duration = Duration::from_millis(250);
+
 /// Everything a task printed, stdout and stderr together.
 #[derive(Clone, Default)]
 struct Capture(Arc<std::sync::Mutex<String>>);
@@ -340,18 +344,69 @@ mod signals {
     }
 }
 
-/// Copy one of a child's output streams into the sink, line by line.
-async fn pump(stream: impl tokio::io::AsyncRead + Unpin, sink: Sink, to_stderr: bool) {
+/// A command's output: a reader per pipe, and one writer passing on what
+/// they read, so a slow terminal never holds up reading the pipes.
+#[derive(Default)]
+struct Pumps {
+    readers: JoinSet<()>,
+    writer: JoinSet<()>,
+}
+
+impl Pumps {
+    fn start(child: &mut tokio::process::Child, sink: &Sink) -> Self {
+        // Unbounded: the capture holds the whole output anyway.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut readers = JoinSet::new();
+        if let Some(stdout) = child.stdout.take() {
+            readers.spawn(read_lines(stdout, tx.clone(), false));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            readers.spawn(read_lines(stderr, tx.clone(), true));
+        }
+        drop(tx);
+        let mut writer = JoinSet::new();
+        writer.spawn(write_lines(rx, sink.clone()));
+        Self { readers, writer }
+    }
+
+    /// Give the pipes `grace` to close, stop reading them, and pass on all
+    /// that was read. False if a pipe was still open.
+    async fn finish(&mut self, grace: Duration) -> bool {
+        let closed = tokio::time::timeout(grace, async {
+            while self.readers.join_next().await.is_some() {}
+        })
+        .await
+        .is_ok();
+        self.readers.shutdown().await;
+        while self.writer.join_next().await.is_some() {}
+        closed
+    }
+}
+
+type Line = (Vec<u8>, bool);
+
+async fn read_lines(
+    stream: impl tokio::io::AsyncRead + Unpin,
+    tx: tokio::sync::mpsc::UnboundedSender<Line>,
+    to_stderr: bool,
+) {
     use tokio::io::AsyncBufReadExt;
 
     let mut reader = tokio::io::BufReader::new(stream);
-    let mut buf = Vec::new();
     loop {
-        buf.clear();
+        let mut buf = Vec::new();
         match reader.read_until(b'\n', &mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
+        if tx.send((buf, to_stderr)).is_err() {
+            break;
+        }
+    }
+}
+
+async fn write_lines(mut rx: tokio::sync::mpsc::UnboundedReceiver<Line>, sink: Sink) {
+    while let Some((buf, to_stderr)) = rx.recv().await {
         let text = String::from_utf8_lossy(&buf);
         sink.capture.push(&text);
         let line = text.trim_end_matches(['\n', '\r']);
@@ -1152,7 +1207,7 @@ impl Executor {
 
         // Left in yatr's process group: it owns the terminal, so Ctrl-C reaches it directly.
         let child = command.spawn()?;
-        let status = Self::supervise(child, false, JoinSet::new(), ctx).await?;
+        let status = Self::supervise(child, false, Pumps::default(), ctx).await?;
 
         if !status.success() {
             return Err(YatrError::CommandFailed {
@@ -1222,7 +1277,7 @@ impl Executor {
     async fn supervise(
         mut child: tokio::process::Child,
         group: bool,
-        mut pumps: JoinSet<()>,
+        mut pumps: Pumps,
         ctx: &Ctx,
     ) -> Result<std::process::ExitStatus> {
         let mut reaper = Reaper {
@@ -1232,7 +1287,14 @@ impl Executor {
         };
         let finished = async {
             let status = child.wait().await;
-            while pumps.join_next().await.is_some() {}
+            if !pumps.finish(OUTPUT_GRACE).await {
+                errln!(
+                    "{} task '{}': a process it left in the background still holds its \
+                     output, which is no longer read. Redirect that process's output to keep it",
+                    style("warning:").yellow().bold(),
+                    ctx.task
+                );
+            }
             status
         };
         let stop = tokio::select! {
@@ -1243,10 +1305,8 @@ impl Executor {
             stop = ctx.stopped() => stop,
         };
         reaper.terminate(&mut child).await;
-        let _ = tokio::time::timeout(Duration::from_secs(1), async {
-            while pumps.join_next().await.is_some() {}
-        })
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), pumps.finish(Duration::from_secs(1)))
+            .await;
         Err(stop)
     }
 
@@ -1274,13 +1334,7 @@ impl Executor {
         command.process_group(0);
 
         let mut child = command.spawn()?;
-        let mut pumps = JoinSet::new();
-        if let Some(stdout) = child.stdout.take() {
-            pumps.spawn(pump(stdout, ctx.sink.clone(), false));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            pumps.spawn(pump(stderr, ctx.sink.clone(), true));
-        }
+        let pumps = Pumps::start(&mut child, &ctx.sink);
         let status = Self::supervise(child, true, pumps, ctx).await?;
 
         if !status.success() {

@@ -96,6 +96,13 @@ A line that starts with `::` is printed without the prefix, so GitHub Actions
 workflow commands (`::error::`, `::group::`, `::endgroup::`) emitted by a task
 still annotate and fold the log.
 
+A command ends when its process exits, even if it left something running in
+the background (`server & run-tests`). Output already written is still read;
+then yatr stops reading, and warns if a background process still holds the
+task's stdout or stderr. That process is not killed, but what it prints from
+then on is lost, and it may get SIGPIPE: redirect its output
+(`server >server.log 2>&1 &`) to keep it.
+
 If yatr's stdout is closed early (`yatr test | head`), further output is dropped
 and the run carries on; the exit status still reports how the tasks went.
 
