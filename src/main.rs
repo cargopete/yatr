@@ -580,9 +580,45 @@ async fn apply_toolchains(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+/// `yatr <task> -- <args>`: the args join the last command the task runs,
+/// and so its cache key.
+fn append_task_args(config: &mut Config, tasks: &[String], opts: &RunArgs) -> Result<()> {
+    if opts.args.is_empty() {
+        return Ok(());
+    }
+    let refuse = |message: String| YatrError::TaskArgs { message };
+    let [name] = tasks else {
+        return Err(refuse(format!(
+            "arguments after `--` go to one task; {} were named",
+            tasks.len()
+        )));
+    };
+    let settings_shell = config.settings.shell.clone();
+    let Some(task) = config.tasks.get_mut(name) else {
+        return Ok(());
+    };
+    let shell = (opts.shell || task.shell.unwrap_or(false))
+        .then(|| settings_shell.as_deref().unwrap_or(executor::DEFAULT_SHELL));
+    // A foreground task runs only its first command.
+    let last = if task.foreground {
+        0
+    } else {
+        task.run.len().max(1) - 1
+    };
+    let Some(cmd) = task.run.get_mut(last) else {
+        return Err(refuse(format!(
+            "task '{name}' has no command to pass arguments to; only `run` commands take them"
+        )));
+    };
+    *cmd = Executor::append_args(cmd, &opts.args, shell)
+        .map_err(|reason| refuse(format!("task '{name}': {reason}")))?;
+    Ok(())
+}
+
 async fn run_tasks(tasks: &[String], opts: &RunArgs, cli: &Cli) -> Result<()> {
     let mode = opts.mode();
     let (mut config, config_path) = Config::load(cli.config.as_deref())?;
+    append_task_args(&mut config, tasks, opts)?;
     let mut graph = TaskGraph::from_config(&config)?;
     graph.execution_order_all(tasks)?;
 

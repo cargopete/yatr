@@ -190,6 +190,9 @@ fn arguments(
                     "`tasks` must be a non-empty array of task names",
                 ));
             }
+            if let Some(task) = tasks.iter().find(|t| t.starts_with('-')) {
+                return Err(tool_error(format!("`tasks` is not valid: {task:?}")));
+            }
             if let Some(task) = foreground_task(&tasks, config) {
                 return Err(tool_error(format!(
                     "task '{task}' is a foreground task: it runs until stopped and takes over \
@@ -211,7 +214,6 @@ fn arguments(
             if args.get("affected").is_some_and(|a| !a.is_null()) {
                 command_line.push(format!("--affected={}", string_arg(args, "affected")?));
             }
-            command_line.push("--".into());
             command_line.extend(tasks.into_iter().map(String::from));
             Ok(command_line)
         }
