@@ -1334,3 +1334,38 @@ fn redirected_background_child_is_quiet() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("still holds"), "{stderr}");
 }
+
+/// Output is not cut short when yatr's own stdout is slow to drain. The task
+/// prints more than a pipe buffer but less than two, so it can exit while
+/// yatr is still blocked writing what it read.
+#[cfg(unix)]
+#[test]
+fn slow_reader_gets_all_output() {
+    use std::io::Read;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.big]\nshell = true\nno_cache = true\nrun = [\"yes 123456789 | head -n 12000\"]\n",
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("yatr"))
+        .current_dir(dir.path())
+        .arg("big")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(stdout.len(), 120_000);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("still holds"), "{stderr}");
+}
