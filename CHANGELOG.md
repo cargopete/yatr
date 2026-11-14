@@ -6,8 +6,17 @@ yatr adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `yatr <task> -- <args>` appends the args to the task's last command, each as one word, quoted for the shell in a `shell = true` task. One task only; the args are part of the cache key (#53).
+
+### Changed
+
+- Names after `--` in `yatr run -- <names>` are now arguments for the task, not task names. The MCP `run` tool, which used that form, refuses a task name starting with `-` instead.
+
 ### Fixed
 
+- A quoted empty word in a non-shell command (`git commit -m ''`) is passed as an empty argument rather than dropped.
 - A shell task that leaves a process in the background (`server & run-tests`) ends when its command exits, rather than when that process does. yatr reads what was already written, stops reading, and warns if the background process still holds the task's output (#54).
 
 ## [1.4.0] - 2026-11-14

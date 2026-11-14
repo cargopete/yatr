@@ -77,6 +77,17 @@ impl CacheStatus {
     }
 }
 
+/// The shell a `shell = true` command runs under when `[settings] shell` is unset.
+pub const DEFAULT_SHELL: &str = if cfg!(windows) { "cmd" } else { "sh" };
+
+/// Whether `program` is cmd.exe, which takes `/C` and its own quoting.
+#[must_use]
+pub fn is_cmd(program: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"))
+}
+
 /// How long a cancelled task gets between SIGTERM and SIGKILL.
 const KILL_GRACE: Duration = Duration::from_secs(3);
 
@@ -1339,13 +1350,9 @@ impl Executor {
     /// shell mode, otherwise split into program and arguments.
     fn build_command(cmd: &str, use_shell: bool, shell: Option<&str>) -> Command {
         if use_shell {
-            let default = if cfg!(windows) { "cmd" } else { "sh" };
-            let program = shell.unwrap_or(default);
-            let is_cmd = Path::new(program)
-                .file_stem()
-                .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"));
+            let program = shell.unwrap_or(DEFAULT_SHELL);
             let mut c = Command::new(program);
-            c.arg(if is_cmd { "/C" } else { "-c" }).arg(cmd);
+            c.arg(if is_cmd(program) { "/C" } else { "-c" }).arg(cmd);
             return c;
         }
         let parts = Self::parse_command(cmd, false);
@@ -1364,21 +1371,24 @@ impl Executor {
         let mut parts = Vec::new();
         let mut current = String::new();
         let mut in_quotes = false;
+        let mut quoted = false;
         let mut quote_char = '"';
 
         for c in cmd.chars() {
             match c {
                 '"' | '\'' if !in_quotes => {
                     in_quotes = true;
+                    quoted = true;
                     quote_char = c;
                 }
                 c if c == quote_char && in_quotes => {
                     in_quotes = false;
                 }
                 ' ' if !in_quotes => {
-                    if !current.is_empty() {
+                    if !current.is_empty() || quoted {
                         parts.push(std::mem::take(&mut current));
                     }
+                    quoted = false;
                 }
                 _ => {
                     current.push(c);
@@ -1386,11 +1396,52 @@ impl Executor {
             }
         }
 
-        if !current.is_empty() {
+        if !current.is_empty() || quoted {
             parts.push(current);
         }
 
         parts
+    }
+
+    /// `cmd` with `args` appended, each quoted to arrive as one word: for
+    /// `shell` when the command runs under one, otherwise for `parse_command`.
+    pub(crate) fn append_args(
+        cmd: &str,
+        args: &[String],
+        shell: Option<&str>,
+    ) -> std::result::Result<String, String> {
+        let safe = |arg: &str| {
+            !arg.is_empty()
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@".contains(c))
+        };
+        let mut out = cmd.to_string();
+        for arg in args {
+            out.push(' ');
+            if safe(arg) {
+                out.push_str(arg);
+            } else if shell.is_some_and(is_cmd) {
+                if arg.contains('"') {
+                    return Err(format!(
+                        "`{arg}` cannot be quoted for cmd: it contains `\"`"
+                    ));
+                }
+                out.push('"');
+                out.push_str(arg);
+                out.push('"');
+            } else if shell.is_some() {
+                out.push('\'');
+                out.push_str(&arg.replace('\'', r"'\''"));
+                out.push('\'');
+            } else {
+                // `parse_command` has no escapes, so a `'` goes inside double quotes.
+                out.push('\'');
+                out.push_str(&arg.replace('\'', r#"'"'"'"#));
+                out.push('\'');
+            }
+        }
+        Ok(out)
     }
 
     /// Print dry-run execution plan
@@ -1568,6 +1619,27 @@ mod tests {
     fn test_parse_command_with_quotes() {
         let parts = Executor::parse_command(r#"echo "hello world""#, false);
         assert_eq!(parts, vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn appended_args_parse_back_as_words() {
+        let args: Vec<String> = ["--ci", "a b", "it's \"q\"", "", "$X"]
+            .map(String::from)
+            .to_vec();
+        let cmd = Executor::append_args("run me", &args, None).unwrap();
+        let mut expected = vec!["run".to_string(), "me".to_string()];
+        expected.extend(args);
+        assert_eq!(Executor::parse_command(&cmd, false), expected);
+    }
+
+    #[test]
+    fn appended_args_are_quoted_for_the_shell() {
+        let args: Vec<String> = ["--ci", "it's", "a b"].map(String::from).to_vec();
+        let sh = Executor::append_args("x", &args, Some("sh")).unwrap();
+        assert_eq!(sh, r"x --ci 'it'\''s' 'a b'");
+        let cmd = Executor::append_args("x", &args, Some("cmd")).unwrap();
+        assert_eq!(cmd, r#"x --ci "it's" "a b""#);
+        assert!(Executor::append_args("x", &["\"".to_string()], Some("cmd.exe")).is_err());
     }
 
     #[tokio::test]

@@ -106,6 +106,10 @@ pub enum YatrError {
     Affected { message: String },
 
     #[error("{message}")]
+    #[diagnostic(code(yatr::cli::task_args))]
+    TaskArgs { message: String },
+
+    #[error("{message}")]
     #[diagnostic(code(yatr::agents::stale))]
     AgentsStale { message: String },
 

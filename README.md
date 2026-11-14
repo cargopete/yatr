@@ -243,7 +243,7 @@ yatr run --shell lines   # or: yatr lines --shell
 ## CLI Reference
 
 ```
-yatr [OPTIONS] [TASK]...
+yatr [OPTIONS] [TASK]... [-- <ARGS>...]
 yatr <COMMAND>
 
 Commands:
@@ -282,6 +282,7 @@ yatr build --dry-run         # Same: the bare form takes the `run` options
 yatr run --force build       # Ignore cache
 yatr run --parallel 4 test   # Limit parallelism
 yatr run --keep-going ci     # Let independent tasks finish after a failure
+yatr sweep -- --ci           # Append args to the task's last command (one task; part of the cache key)
 
 # List tasks
 yatr list                    # Show all tasks

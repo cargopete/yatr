@@ -1369,3 +1369,64 @@ fn slow_reader_gets_all_output() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("still holds"), "{stderr}");
 }
+
+/// `yatr <task> -- <args>` appends the args, as words, to the task's last command.
+#[cfg(unix)]
+#[test]
+fn trailing_args_reach_the_last_command() {
+    let plain = "[tasks.t]\nno_cache = true\nrun = [\"echo first\", \"printf <%s>\"]\n";
+    let (_dir, out) = run_in(plain, &["t", "--", "--ci", "a b", "it's \"q\""]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("first\n"), "{stdout}");
+    assert!(stdout.contains("<--ci><a b><it's \"q\">"), "{stdout}");
+
+    let shell = "[tasks.t]\nshell = true\nno_cache = true\nrun = [\"printf '<%s>'\"]\n";
+    let (_dir, out) = run_in(shell, &["run", "t", "--", "$HOME", "a b", "it's", ""]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("<$HOME><a b><it's><>"), "{stdout}");
+}
+
+/// Trailing args need exactly one task, and one with a command to take them.
+#[cfg(unix)]
+#[test]
+fn trailing_args_need_one_task_with_commands() {
+    let toml = "[tasks.a]\nno_cache = true\nrun = [\"true\"]\n\
+                [tasks.b]\nno_cache = true\nrun = [\"true\"]\n\
+                [tasks.all]\ndepends = [\"a\", \"b\"]\nrun = []\n";
+    let (_dir, out) = run_in(toml, &["a", "b", "--", "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("one task"), "{stderr}");
+
+    let (_dir, out) = run_in(toml, &["all", "--", "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no command"), "{stderr}");
+}
+
+/// The args are part of the cache key.
+#[cfg(unix)]
+#[test]
+fn trailing_args_are_part_of_the_cache_key() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "x").unwrap();
+    std::fs::write(
+        dir.path().join("yatr.toml"),
+        "[tasks.t]\nsources = [\"in.txt\"]\nrun = [\"echo t\"]\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        Command::cargo_bin("yatr")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(!was_cached(&run(&["t"])));
+    assert!(!was_cached(&run(&["t", "--", "--ci"])));
+    assert!(was_cached(&run(&["t", "--", "--ci"])));
+    assert!(was_cached(&run(&["t"])));
+}

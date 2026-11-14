@@ -27,7 +27,7 @@ in [Coding agents](./agents.md).
 ## `run`
 
 ```bash
-yatr run [TASKS]... [OPTIONS]
+yatr run [TASKS]... [OPTIONS] [-- <ARGS>...]
   --dry-run            Show the execution plan without running
   --force              Ignore the cache
   --parallel <N>       Limit parallelism (0 = `[settings] parallelism`, else CPU count)
@@ -47,6 +47,16 @@ The bare form `yatr [OPTIONS] [TASKS]...` is shorthand for `yatr run` and takes
 the same options, before or after the task names. Every name is checked before
 anything runs, and several names are planned as one graph, so a shared
 dependency runs once.
+
+Arguments after `--` are appended to the task's last command, as `just`,
+`npm run` and `cargo` do: `yatr sweep -- --ci` runs `node scripts/sweep.mjs --ci`.
+Exactly one task may be named, and it must have `run` commands; a dependency
+gets nothing, and a `foreground` task gets them on the one command it runs. Each
+argument arrives as one word: for a `shell = true` task it is single-quoted for a
+POSIX shell (double-quoted for cmd, which cannot take one containing `"`), so
+`$HOME` or `a b` is passed literally rather than expanded or split. The args
+become part of the command and so of the cache key: `yatr t -- --ci` and
+`yatr t` are cached apart. `watch` does not take them.
 
 The `--dry-run` plan lists each task by stage with what it would run, its `cwd`
 and `env`, and a `mode:` line naming whichever of `shell`, `parallel`,
