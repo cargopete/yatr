@@ -246,6 +246,7 @@
   .yes { color: var(--accent); font-size: var(--fs-lede); }
   .no  { color: var(--text-muted); }
   .part { color: var(--text-muted); }
+  .matrix-note { color: var(--text-muted); max-width: 56ch; margin: 24px 0 0; }
 
   /* ---------- install / cta ---------- */
   .closer { text-align: center; }
@@ -518,25 +519,29 @@
           <thead>
             <tr class="head-divider">
               <th>Capability</th>
-              <th class="hide-sm">make</th>
+              <th>make</th>
               <th>just</th>
               <th class="hide-sm">cargo-make</th>
+              <th class="hide-sm">task</th>
               <th class="us">yatr</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>Simple config</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Parallel execution</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Content-addressed caching</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Captures &amp; restores outputs</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Remote / shared cache</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Signed cache</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Affected detection</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Toolchain management</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Sandboxed plugins</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Editor LSP</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="part">~</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Parallel execution</td><td><span class="yes">&check;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Content-addressed caching</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Captures &amp; restores outputs</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Remote / shared cache</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Signed cache</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Affected detection</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Toolchain management</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Sandboxed plugins</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Official editor schema or LSP</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Preinstalled on GitHub's Ubuntu runners</td><td><span class="yes">&check;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="no">&times;</span></td></tr>
+            <tr><td>First released</td><td>1976</td><td>2016</td><td class="hide-sm">2017</td><td class="hide-sm">2017</td><td class="col-us">2025</td></tr>
+            <tr><td>Hermetic, sandboxed builds</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="no">&times;</span></td></tr>
           </tbody>
         </table>
+        <p class="matrix-note">~ is partial. task skips a task whose source checksums have not changed, but stores no outputs. cargo-make picks a rustup toolchain per task, but does not download other language runtimes.</p>
       </div>
     </div>
   </section>
