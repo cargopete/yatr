@@ -4,30 +4,41 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>yatr · a task runner whose cache tells the truth</title>
-<meta name="description" content="yatr is a fast, single-binary, polyglot task runner with a content-addressed cache that captures outputs and shares them across machines and CI." />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 56'%3E%3Cpath fill='%23E2A24C' d='M32 8c-8 0-13 4-14 10-1 4-1 8 1 12 1 6 4 12 9 15 2 1 6 1 8 0 5-3 8-9 9-15 2-4 2-8 1-12-1-6-6-10-14-10z'/%3E%3Cpath fill='%23E2A24C' d='M19 17C12 15 7 17 5 22c-1 2 0 4 2 4 0-3 3-6 8-5 2 0 4-1 4-4zM45 17c7-2 12 0 14 5 1 2 0 4-2 4 0-3-3-6-8-5-2 0-4-1-4-4z'/%3E%3C/svg%3E" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<meta name="description" content="yatr is a task runner with a content-addressed cache that captures outputs and shares them across machines and CI." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 56'%3E%3Cpath fill='%23D0704F' d='M32 8c-8 0-13 4-14 10-1 4-1 8 1 12 1 6 4 12 9 15 2 1 6 1 8 0 5-3 8-9 9-15 2-4 2-8 1-12-1-6-6-10-14-10z'/%3E%3Cpath fill='%23D0704F' d='M19 17C12 15 7 17 5 22c-1 2 0 4 2 4 0-3 3-6 8-5 2 0 4-1 4-4zM45 17c7-2 12 0 14 5 1 2 0 4-2 4 0-3-3-6-8-5-2 0-4-1-4-4z'/%3E%3C/svg%3E" />
+<link rel="preload" href="/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin />
 <style>
+  @font-face { font-family: "Fraunces"; src: url("/fonts/fraunces.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+  @font-face { font-family: "Fraunces"; src: url("/fonts/fraunces-italic.woff2") format("woff2"); font-weight: 500; font-style: italic; font-display: swap; }
+  @font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-style: normal; font-display: swap; }
+  @font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+
   :root {
-    --soil:        #14100c;
-    --soil-2:      #1a150f;
-    --surface:     #1f1810;
-    --surface-2:   #261d13;
-    --hair:        rgba(226,162,76,0.14);
-    --hair-soft:   rgba(226,162,76,0.07);
-    --bone:        #f3ebdd;
-    --dust:        #b6a78f;
-    --dust-dim:    #8a7c66;
-    --accent:      #e2a24c;
-    --accent-soft: #f0bd72;
-    --accent-deep: #c07c2c;
-    --ok:          #c8a86a;
+    --bg:             #171614;
+    --bg-elev:        #201f1c;
+    --bg-code:        #1b1a17;
+    --bg-inset:       #262420;
+    --border:         rgba(255,255,255,0.09);
+    --border-hi:      rgba(255,255,255,0.16);
+    --text:           #ece9e3;
+    --text-muted:     #9c978c;
+    --text-faint:     #6e6a61;
+    --accent:         #d0704f;
+    --pale-accent-bg: rgba(208,112,79,0.12);
 
     --serif: "Fraunces", "Iowan Old Style", Georgia, serif;
     --sans:  "Space Grotesk", system-ui, sans-serif;
     --mono:  "JetBrains Mono", ui-monospace, monospace;
+
+    --fs-hero:   clamp(2.4rem, 6vw, 3.6rem);
+    --fs-figure: clamp(2rem, 4.5vw, 3rem);
+    --fs-h1:     1.875rem;
+    --fs-title:  1.25rem;
+    --fs-lede:   1rem;
+    --fs-body:   0.889rem;
+    --fs-small:  0.75rem;
+    --fs-kicker: 0.625rem;
 
     --maxw: 1140px;
     --r: 16px;
@@ -35,14 +46,14 @@
 
   * { box-sizing: border-box; }
 
-  html { scroll-behavior: smooth; }
+  html { font-size: 112.5%; scroll-behavior: smooth; }
 
   body {
     margin: 0;
-    background: var(--soil);
-    color: var(--bone);
+    background: var(--bg);
+    color: var(--text);
     font-family: var(--sans);
-    font-size: 17px;
+    font-size: var(--fs-body);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
@@ -54,8 +65,8 @@
     position: fixed;
     inset: 0;
     background:
-      radial-gradient(900px 520px at 78% -8%, rgba(226,162,76,0.16), transparent 60%),
-      radial-gradient(700px 500px at 8% 4%, rgba(192,124,44,0.10), transparent 55%);
+      radial-gradient(900px 520px at 78% -8%, rgba(208,112,79,0.14), transparent 60%),
+      radial-gradient(700px 500px at 8% 4%, rgba(208,112,79,0.08), transparent 55%);
     pointer-events: none;
     z-index: 0;
   }
@@ -85,26 +96,26 @@
     display: flex;
     align-items: center;
     backdrop-filter: blur(14px);
-    background: rgba(20,16,12,0.66);
-    border-bottom: 1px solid var(--hair-soft);
+    background: rgba(23,22,20,0.66);
+    border-bottom: 1px solid var(--border);
   }
   .nav { display: flex; align-items: center; gap: 28px; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
-  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; letter-spacing: -0.01em; font-size: 19px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 600; letter-spacing: -0.01em; font-size: var(--fs-title); }
   .brand svg { width: 30px; height: 28px; display: block; }
-  .nav-links { display: flex; gap: 26px; margin-left: auto; font-size: 15px; color: var(--dust); }
+  .nav-links { display: flex; gap: 26px; margin-left: auto; font-size: var(--fs-body); color: var(--text-muted); }
   .nav-links a { transition: color .18s ease; }
-  .nav-links a:hover { color: var(--bone); }
+  .nav-links a:hover { color: var(--text); }
   .nav-cta {
     font-family: var(--mono);
-    font-size: 13.5px;
-    color: var(--soil);
+    font-size: var(--fs-small);
+    color: var(--bg);
     background: var(--accent);
     padding: 9px 15px;
     border-radius: 9px;
-    font-weight: 500;
+    font-weight: 400;
     transition: transform .18s ease, background .18s ease;
   }
-  .nav-cta:hover { background: var(--accent-soft); transform: translateY(-1px); }
+  .nav-cta:hover { transform: translateY(-1px); }
 
   /* ---------- hero ---------- */
   .hero { position: relative; padding-top: 76px; padding-bottom: 96px; min-height: calc(100vh - 72px); display: flex; align-items: center; }
@@ -112,8 +123,8 @@
 
   .eyebrow {
     display: inline-flex; align-items: center; gap: 9px;
-    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--accent); border: 1px solid var(--hair); border-radius: 100px;
+    font-family: var(--mono); font-size: var(--fs-kicker); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--border-hi); border-radius: 100px;
     padding: 6px 13px; margin-bottom: 26px;
   }
   .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
@@ -121,53 +132,53 @@
   h1 {
     font-family: var(--serif);
     font-weight: 400;
-    font-size: clamp(2.7rem, 6vw, 4.5rem);
+    font-size: var(--fs-hero);
     line-height: 1.02;
     letter-spacing: -0.022em;
     margin: 0 0 22px;
   }
   h1 em { font-style: italic; font-weight: 500; color: var(--accent); }
 
-  .lede { font-size: clamp(1.05rem, 1.6vw, 1.22rem); color: var(--dust); max-width: 30ch; margin: 0 0 34px; }
+  .lede { font-size: var(--fs-lede); color: var(--text-muted); max-width: 30ch; margin: 0 0 34px; }
 
   .cta-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 
   .install {
     display: inline-flex; align-items: center; gap: 14px;
-    font-family: var(--mono); font-size: 15px;
-    background: var(--surface); border: 1px solid var(--hair);
-    border-radius: 11px; padding: 13px 16px; color: var(--bone);
+    font-family: var(--mono); font-size: var(--fs-small);
+    background: var(--bg-elev); border: 1px solid var(--border-hi);
+    border-radius: 11px; padding: 13px 16px; color: var(--text);
     cursor: pointer; transition: border-color .18s ease, background .18s ease;
   }
-  .install:hover { border-color: var(--accent); background: var(--surface-2); }
+  .install:hover { border-color: var(--accent); background: var(--bg-inset); }
   .install .prompt { color: var(--accent); }
-  .install .copy { color: var(--dust-dim); font-size: 12px; border-left: 1px solid var(--hair); padding-left: 12px; transition: color .18s ease; }
+  .install .copy { color: var(--text-faint); font-size: var(--fs-kicker); border-left: 1px solid var(--border-hi); padding-left: 12px; transition: color .18s ease; }
   .install.copied .copy { color: var(--accent); }
 
-  .ghost { font-size: 15px; color: var(--dust); padding: 13px 6px; transition: color .18s ease; }
-  .ghost:hover { color: var(--bone); }
+  .ghost { font-size: var(--fs-body); color: var(--text-muted); padding: 13px 0; transition: color .18s ease; }
+  .ghost:hover { color: var(--text); }
   .ghost .arrow { color: var(--accent); }
 
   /* terminal */
   .term {
-    background: linear-gradient(180deg, var(--surface-2), var(--surface));
-    border: 1px solid var(--hair);
+    background: linear-gradient(180deg, var(--bg-inset), var(--bg-elev));
+    border: 1px solid var(--border-hi);
     border-radius: 14px;
     box-shadow: 0 40px 90px -40px rgba(0,0,0,0.8), 0 0 0 1px rgba(0,0,0,0.3);
     overflow: hidden;
     font-family: var(--mono);
   }
-  .term-bar { display: flex; align-items: center; gap: 7px; padding: 13px 16px; border-bottom: 1px solid var(--hair-soft); }
-  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a2e20; display: block; }
-  .term-bar i:nth-child(1) { background: #c07c2c; }
-  .term-bar span { margin-left: 10px; font-size: 12.5px; color: var(--dust-dim); }
-  .term-body { padding: 20px 20px 24px; font-size: 13.5px; line-height: 1.85; }
-  .term-body .cmd { color: var(--bone); }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-hi); display: block; }
+  .term-bar i:nth-child(1) { background: var(--accent); }
+  .term-bar span { margin-left: 10px; font-size: var(--fs-kicker); color: var(--text-faint); }
+  .term-body { padding: 20px 20px 24px; font-size: var(--fs-small); line-height: 1.85; }
+  .term-body .cmd { color: var(--text); }
   .term-body .cmd::before { content: "$ "; color: var(--accent); }
   .term-body .ok { color: var(--accent); }
-  .term-body .mut { color: var(--dust-dim); }
-  .term-body .task { color: var(--dust); }
-  .term-body .herd { color: var(--accent-soft); }
+  .term-body .mut { color: var(--text-muted); }
+  .term-body .task { color: var(--text-muted); }
+  .term-body .herd { color: var(--text); }
 
   /* horizon motif */
   .horizon { position: absolute; left: 0; right: 0; bottom: 0; height: 220px; pointer-events: none; z-index: 0; opacity: 0.9; }
@@ -178,63 +189,64 @@
 
   /* ---------- section scaffolding ---------- */
   section { padding: 104px 0; }
-  .kicker { font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
-  h2 { font-family: var(--serif); font-weight: 400; font-size: clamp(2rem, 3.6vw, 2.9rem); letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 16px; }
+  .kicker { font-family: var(--mono); font-size: var(--fs-kicker); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+  h2 { font-family: var(--serif); font-weight: 400; font-size: var(--fs-h1); letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 16px; }
   h2 em { font-style: italic; color: var(--accent); }
-  .section-lede { color: var(--dust); max-width: 56ch; font-size: 1.05rem; }
+  .section-lede { color: var(--text-muted); max-width: 56ch; font-size: var(--fs-lede); }
   .section-head { margin-bottom: 52px; max-width: 720px; }
 
   /* ---------- bento ---------- */
   .bento { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; }
   .cell {
-    background: linear-gradient(180deg, var(--surface), var(--soil-2));
-    border: 1px solid var(--hair-soft);
+    background: linear-gradient(180deg, var(--bg-elev), var(--bg-code));
+    border: 1px solid var(--border);
     border-radius: var(--r);
     padding: 28px;
     position: relative;
     overflow: hidden;
     transition: border-color .22s ease, transform .22s ease;
   }
-  .cell:hover { border-color: var(--hair); transform: translateY(-3px); }
-  .cell h3 { font-family: var(--sans); font-weight: 700; font-size: 1.16rem; letter-spacing: -0.01em; margin: 0 0 9px; }
-  .cell p { color: var(--dust); margin: 0; font-size: 0.97rem; }
+  .cell:hover { border-color: var(--border-hi); transform: translateY(-3px); }
+  .cell h3 { font-family: var(--sans); font-weight: 500; font-size: var(--fs-title); letter-spacing: -0.01em; margin: 0 0 9px; }
+  .cell p { color: var(--text-muted); margin: 0; font-size: var(--fs-body); }
   .cell .ic { width: 30px; height: 30px; margin-bottom: 18px; color: var(--accent); }
-  .cell .tag { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; display: inline-block; margin-bottom: 16px; padding: 4px 9px; border: 1px solid var(--hair); border-radius: 7px; }
+  .cell .tag { font-family: var(--mono); font-size: var(--fs-kicker); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; display: inline-block; margin-bottom: 16px; padding: 4px 9px; border: 1px solid var(--border-hi); border-radius: 7px; }
 
   .c-wide { grid-column: span 3; }
   .c-mid  { grid-column: span 3; }
   .c-third{ grid-column: span 2; }
   .c-feature { grid-column: span 4; display: flex; flex-direction: column; justify-content: space-between; min-height: 230px; }
-  .c-feature .big-num { font-family: var(--serif); font-size: 3.4rem; color: var(--accent); line-height: 1; letter-spacing: -0.02em; }
+  .c-feature .big-num { font-family: var(--serif); font-size: var(--fs-figure); color: var(--accent); line-height: 1; letter-spacing: -0.02em; }
 
   /* mini cache diagram inside feature cell */
-  .flow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-family: var(--mono); font-size: 12px; color: var(--dust); }
-  .flow .chip { background: var(--soil); border: 1px solid var(--hair); border-radius: 8px; padding: 7px 11px; }
+  .flow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-family: var(--mono); font-size: var(--fs-small); color: var(--text-muted); }
+  .flow .chip { background: var(--bg); border: 1px solid var(--border-hi); border-radius: 8px; padding: 7px 11px; }
   .flow .arrow { color: var(--accent); }
 
   /* ---------- speed band ---------- */
-  .speed { background: linear-gradient(180deg, var(--soil-2), var(--soil)); border-top: 1px solid var(--hair-soft); border-bottom: 1px solid var(--hair-soft); }
+  .speed { background: linear-gradient(180deg, var(--bg-code), var(--bg)); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .speed-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
   .stat { text-align: left; }
-  .stat .n { font-family: var(--serif); font-size: clamp(2.6rem, 5vw, 3.8rem); color: var(--bone); line-height: 1; letter-spacing: -0.02em; }
+  .stat .n { font-family: var(--serif); font-size: var(--fs-figure); color: var(--text); line-height: 1; letter-spacing: -0.02em; }
   .stat .n span { color: var(--accent); }
-  .stat .l { color: var(--dust); margin-top: 12px; font-size: 0.98rem; max-width: 30ch; }
+  .stat .l { color: var(--text-muted); margin-top: 12px; font-size: var(--fs-body); max-width: 30ch; }
 
   /* ---------- comparison matrix ---------- */
   .matrix { width: 100%; border-collapse: separate; border-spacing: 0; }
-  .matrix thead th { font-family: var(--sans); font-weight: 500; font-size: 0.95rem; color: var(--dust); text-align: center; padding: 0 0 18px; }
+  .matrix thead th { font-family: var(--sans); font-weight: 500; font-size: var(--fs-body); color: var(--text-muted); text-align: center; padding: 0 0 18px; }
   .matrix thead th:first-child { text-align: left; }
-  .matrix thead th.us { color: var(--accent); font-weight: 700; }
-  .matrix tbody td { padding: 16px 12px; text-align: center; font-size: 0.95rem; color: var(--dust); }
-  .matrix tbody td:first-child { text-align: left; color: var(--bone); font-weight: 500; }
+  .matrix thead th.us { color: var(--accent); font-weight: 500; }
+  .matrix tbody td { padding: 16px 12px; text-align: center; font-size: var(--fs-body); color: var(--text-muted); }
+  .matrix tbody td:first-child { text-align: left; color: var(--text); font-weight: 500; }
   .matrix tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.012); }
   .matrix tbody tr td:first-child { border-top-left-radius: 10px; border-bottom-left-radius: 10px; }
   .matrix tbody tr td:last-child { border-top-right-radius: 10px; border-bottom-right-radius: 10px; }
-  .matrix .col-us { background: rgba(226,162,76,0.07) !important; color: var(--bone); }
-  .matrix .head-divider th { border-bottom: 1px solid var(--hair); }
-  .yes { color: var(--accent); font-size: 1.1rem; }
-  .no  { color: var(--dust-dim); }
-  .part { color: var(--dust); }
+  .matrix .col-us { background: var(--pale-accent-bg) !important; color: var(--text); }
+  .matrix .head-divider th { border-bottom: 1px solid var(--border-hi); }
+  .yes { color: var(--accent); font-size: var(--fs-lede); }
+  .no  { color: var(--text-muted); }
+  .part { color: var(--text-muted); }
+  .matrix-note { color: var(--text-muted); max-width: 56ch; margin: 24px 0 0; }
 
   /* ---------- install / cta ---------- */
   .closer { text-align: center; }
@@ -243,24 +255,24 @@
   .cmds { display: inline-flex; flex-direction: column; gap: 12px; align-items: stretch; text-align: left; min-width: min(440px, 90vw); }
   .cmd-line {
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
-    font-family: var(--mono); font-size: 14.5px;
-    background: var(--surface); border: 1px solid var(--hair-soft); border-radius: 11px;
+    font-family: var(--mono); font-size: var(--fs-small);
+    background: var(--bg-elev); border: 1px solid var(--border); border-radius: 11px;
     padding: 15px 17px; cursor: pointer; transition: border-color .18s ease;
   }
   .cmd-line:hover { border-color: var(--accent); }
-  .cmd-line .l { color: var(--bone); }
+  .cmd-line .l { color: var(--text); }
   .cmd-line .l b { color: var(--accent); font-weight: 400; }
-  .cmd-line .note { color: var(--dust-dim); font-size: 11.5px; font-family: var(--sans); }
-  .closer .links { margin-top: 36px; display: flex; gap: 24px; justify-content: center; font-size: 15px; color: var(--dust); }
+  .cmd-line .note { color: var(--text-muted); font-size: var(--fs-small); font-family: var(--sans); }
+  .closer .links { margin-top: 36px; display: flex; gap: 24px; justify-content: center; font-size: var(--fs-body); color: var(--text-muted); }
   .closer .links a { transition: color .18s ease; }
   .closer .links a:hover { color: var(--accent); }
 
   /* ---------- footer ---------- */
-  footer { border-top: 1px solid var(--hair-soft); padding: 40px 0; }
-  .foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; color: var(--dust-dim); font-size: 14px; }
-  .foot .brand { font-size: 16px; color: var(--dust); }
+  footer { border-top: 1px solid var(--border); padding: 40px 0; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; color: var(--text-muted); font-size: var(--fs-small); }
+  .foot .brand { font-size: var(--fs-body); color: var(--text-muted); }
   .foot .brand svg { width: 24px; height: 22px; }
-  .foot .license { font-family: var(--mono); font-size: 12.5px; }
+  .foot .license { font-family: var(--mono); font-size: var(--fs-kicker); }
 
   /* ---------- reveal motion ---------- */
   .reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
@@ -276,12 +288,15 @@
   @media (max-width: 920px) {
     .hero { min-height: auto; padding-top: 56px; padding-bottom: 120px; }
     .hero-grid { grid-template-columns: 1fr; gap: 44px; }
-    .nav-links { display: none; }
+    header { height: auto; padding: 14px 0 10px; }
+    .nav { flex-wrap: wrap; row-gap: 10px; }
+    .nav-cta { margin-left: auto; }
+    .nav-links { order: 3; width: 100%; margin-left: 0; flex-wrap: wrap; column-gap: 20px; row-gap: 4px; }
     .bento { grid-template-columns: repeat(2, 1fr); }
     .c-wide, .c-mid, .c-third, .c-feature { grid-column: span 2; }
     .c-feature { min-height: auto; }
     .speed-grid { grid-template-columns: 1fr; gap: 36px; }
-    .matrix { font-size: 0.86rem; }
+    .matrix tbody td { font-size: var(--fs-small); }
     .matrix .hide-sm { display: none; }
   }
   @media (max-width: 540px) {
@@ -298,8 +313,8 @@
   <symbol id="bison" viewBox="0 0 64 56">
     <path fill="currentColor" d="M32 8c-8 0-13 4-14 10-1 4-1 8 1 12 1 6 4 12 9 15 2 1 6 1 8 0 5-3 8-9 9-15 2-4 2-8 1-12-1-6-6-10-14-10z"/>
     <path fill="currentColor" d="M19 17C12 15 7 17 5 22c-1 2 0 4 2 4 0-3 3-6 8-5 2 0 4-1 4-4zM45 17c7-2 12 0 14 5 1 2 0 4-2 4 0-3-3-6-8-5-2 0-4-1-4-4z"/>
-    <circle cx="25" cy="27" r="1.7" fill="var(--soil)"/>
-    <circle cx="39" cy="27" r="1.7" fill="var(--soil)"/>
+    <circle cx="25" cy="27" r="1.7" fill="var(--bg)"/>
+    <circle cx="39" cy="27" r="1.7" fill="var(--bg)"/>
   </symbol>
 </svg>
 
@@ -325,7 +340,7 @@
       <div class="hero-copy">
         <span class="eyebrow"><span class="dot"></span>Single binary · zero runtime deps</span>
         <h1>Run your tasks.<br><em>Trust your cache.</em></h1>
-        <p class="lede">A fast, single-binary, polyglot task runner with a content-addressed cache that captures outputs and shares them across machines.</p>
+        <p class="lede">A warm rebuild in 0.43s, against 6.10s cold. yatr hashes what goes into each task, restores what it made, and shares the cache across machines.</p>
         <div class="cta-row">
           <button class="install" id="install" aria-label="Copy install command">
             <span><span class="prompt">$</span> cargo install yatr</span>
@@ -354,14 +369,14 @@
     <!-- prairie horizon with a distant bison -->
     <div class="horizon" aria-hidden="true">
       <svg viewBox="0 0 1440 220" preserveAspectRatio="none">
-        <path d="M0,150 C240,120 480,165 720,150 C960,135 1200,170 1440,148 L1440,220 L0,220 Z" fill="#1a150f"/>
-        <path d="M0,178 C300,158 560,192 840,178 C1080,166 1280,196 1440,180 L1440,220 L0,220 Z" fill="#221a11"/>
-        <g fill="#2c2114">
+        <path d="M0,150 C240,120 480,165 720,150 C960,135 1200,170 1440,148 L1440,220 L0,220 Z" fill="var(--bg-code)"/>
+        <path d="M0,178 C300,158 560,192 840,178 C1080,166 1280,196 1440,180 L1440,220 L0,220 Z" fill="var(--bg-elev)"/>
+        <g fill="var(--bg-inset)">
           <g class="grass" style="transform-box:fill-box"><path d="M120,178 q3,-22 0,-30 q6,8 4,16 q5,-6 6,-12 q1,10 -4,18 z"/></g>
           <g class="grass g2" style="transform-box:fill-box"><path d="M1290,182 q3,-24 -1,-32 q7,8 5,17 q5,-7 7,-13 q1,11 -5,20 z"/></g>
         </g>
         <!-- distant bison on the near ridge -->
-        <g transform="translate(1010,138) scale(0.9)" fill="#0f0b07">
+        <g transform="translate(1010,138) scale(0.9)" fill="var(--bg)">
           <path d="M6,40 C4,36 5,32 10,31 C10,27 11,24 15,24 C16,22 18,23 18,26 C19,27 21,28 24,28 C27,21 34,13 44,11 C52,9 58,13 62,19 C70,25 82,27 96,28 C100,28 103,30 104,33 L104,40 L99,40 L99,33 L18,33 L18,40 L13,40 L13,33 Z"/>
         </g>
       </svg>
@@ -382,29 +397,29 @@
           <div>
             <span class="tag">Content addressed</span>
             <h3>Hashes inputs, not clocks</h3>
-            <p>The cache key is a BLAKE3 hash of sources, command, working directory, and declared outputs. Same inputs, guaranteed hit. No mtime guessing.</p>
+            <p>The cache key is a BLAKE3 hash of sources, command, working directory, and declared outputs. Same inputs, same key. No mtime guessing.</p>
           </div>
           <div class="flow">
             <span class="chip">sources</span><span class="arrow">+</span>
             <span class="chip">command</span><span class="arrow">+</span>
             <span class="chip">outputs</span><span class="arrow">&rarr;</span>
-            <span class="chip" style="color:var(--accent);border-color:var(--hair)">blake3</span>
+            <span class="chip" style="color:var(--accent);border-color:var(--border-hi)">blake3</span>
           </div>
         </div>
 
         <div class="cell c-third reveal">
-          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 12a8 8 0 102.3-5.7L4 8.5M4 4v4.5h4.5"/><path d="M10 9h3l2 2v4h-5z"/></svg>
           <h3>Captures &amp; restores outputs</h3>
           <p>On a hit, yatr does not just skip. It restores the actual artifacts from a content store, so a cached build leaves the same files behind.</p>
         </div>
 
-        <div class="cell c-mid reveal">
+        <div class="cell c-third reveal">
           <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5"/></svg>
           <h3>Remote &amp; shared cache, with REAPI</h3>
           <p>Push and pull cache entries over HTTP, or speak the REAPI protocol to talk to bazel-remote and BuildBuddy. Your laptop hits what CI already built.</p>
         </div>
 
-        <div class="cell c-mid reveal">
+        <div class="cell c-third reveal">
           <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
           <h3>Signed against poisoning</h3>
           <p>Every cached result carries a keyed BLAKE3 signature. A tampered entry from a shared cache is rejected, not trusted blindly.</p>
@@ -429,7 +444,7 @@
         </div>
 
         <div class="cell c-third reveal">
-          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="0" /></svg>
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h6M7 12.5h10M7 16c1-1 2-1 3 0s2 1 3 0 2-1 3 0"/></svg>
           <h3>Editor intelligence</h3>
           <p>A language server gives live diagnostics, a task outline, and a published JSON Schema for <code style="font-family:var(--mono);color:var(--accent)">yatr.toml</code>.</p>
         </div>
@@ -438,12 +453,12 @@
   </section>
 
   <!-- THE CACHE (deep dive) -->
-  <section id="cache" style="border-top:1px solid var(--hair-soft)">
+  <section id="cache" style="border-top:1px solid var(--border)">
     <div class="wrap hero-grid" style="align-items:center">
       <div class="reveal">
         <div class="kicker">Why the cache is different</div>
         <h2>A cache that <em>tells the truth.</em></h2>
-        <p class="section-lede" style="margin-bottom:22px">Make trusts timestamps. Most runners trust nothing, or cache by hope. yatr derives a key from what actually went into a task, stores the outputs by content, and signs the lot.</p>
+        <p class="section-lede" style="margin-bottom:22px"><code style="font-family:var(--mono);color:var(--accent)">make</code> trusts timestamps. Most runners trust nothing, or cache by hope. yatr derives a key from what actually went into a task, stores the outputs by content, and signs the lot.</p>
         <p class="section-lede">Move it between machines and the key still matches, because it hashes relative paths. So a warm rebuild is honest: it is the build CI already proved, restored, not re-run.</p>
         <div class="cta-row" style="margin-top:30px">
           <a class="ghost" href="https://cargopete.github.io/yatr/">How caching works <span class="arrow">&rsaquo;</span></a>
@@ -497,38 +512,42 @@
       <div class="section-head reveal">
         <div class="kicker">Where it sits</div>
         <h2>Simpler than cargo-make. <em>More than just.</em></h2>
-        <p class="section-lede">yatr lives in the sweet spot: the ergonomics of a small runner, the cache fundamentals of a build system, and none of the Bazel ceremony.</p>
+        <p class="section-lede">The config of a small runner and the cache of a build system. yatr does not sandbox: Bazel gives you hermetic builds, and yatr runs your commands in your own environment. The last three rows are where it loses.</p>
       </div>
       <div class="reveal">
         <table class="matrix">
           <thead>
             <tr class="head-divider">
               <th>Capability</th>
-              <th class="hide-sm">make</th>
+              <th>make</th>
               <th>just</th>
               <th class="hide-sm">cargo-make</th>
+              <th class="hide-sm">task</th>
               <th class="us">yatr</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>Simple config</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Parallel execution</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Content-addressed caching</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Captures &amp; restores outputs</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Remote / shared cache</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Signed cache</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Affected detection</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Toolchain management</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Sandboxed plugins</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
-            <tr><td>Editor LSP</td><td class="hide-sm"><span class="no">&times;</span></td><td><span class="part">~</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Parallel execution</td><td><span class="yes">&check;</span></td><td><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Content-addressed caching</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Captures &amp; restores outputs</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Remote / shared cache</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Signed cache</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Affected detection</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Toolchain management</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="part">~</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Sandboxed plugins</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Official editor schema or LSP</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="yes">&check;</span></td><td class="col-us"><span class="yes">&check;</span></td></tr>
+            <tr><td>Preinstalled on GitHub's Ubuntu runners</td><td><span class="yes">&check;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="no">&times;</span></td></tr>
+            <tr><td>First released</td><td>1976</td><td>2016</td><td class="hide-sm">2017</td><td class="hide-sm">2017</td><td class="col-us">2025</td></tr>
+            <tr><td>Hermetic, sandboxed builds</td><td><span class="no">&times;</span></td><td><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="hide-sm"><span class="no">&times;</span></td><td class="col-us"><span class="no">&times;</span></td></tr>
           </tbody>
         </table>
+        <p class="matrix-note">~ is partial. task skips a task whose source checksums have not changed, but stores no outputs. cargo-make picks a rustup toolchain per task, but does not download other language runtimes.</p>
       </div>
     </div>
   </section>
 
   <!-- CLOSER -->
-  <section class="closer" style="border-top:1px solid var(--hair-soft)">
+  <section class="closer" style="border-top:1px solid var(--border)">
     <div class="wrap reveal">
       <div class="kicker" style="text-align:center">Get the herd moving</div>
       <h2>One binary. Drop in a <em>yatr.toml</em>. Done.</h2>
