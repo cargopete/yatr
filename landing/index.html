@@ -409,13 +409,13 @@
           <p>On a hit, yatr does not just skip. It restores the actual artifacts from a content store, so a cached build leaves the same files behind.</p>
         </div>
 
-        <div class="cell c-mid reveal">
+        <div class="cell c-third reveal">
           <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5"/></svg>
           <h3>Remote &amp; shared cache, with REAPI</h3>
           <p>Push and pull cache entries over HTTP, or speak the REAPI protocol to talk to bazel-remote and BuildBuddy. Your laptop hits what CI already built.</p>
         </div>
 
-        <div class="cell c-mid reveal">
+        <div class="cell c-third reveal">
           <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
           <h3>Signed against poisoning</h3>
           <p>Every cached result carries a keyed BLAKE3 signature. A tampered entry from a shared cache is rejected, not trusted blindly.</p>
