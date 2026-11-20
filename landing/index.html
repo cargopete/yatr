@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>yatr · a task runner whose cache tells the truth</title>
-<meta name="description" content="yatr is a fast, single-binary, polyglot task runner with a content-addressed cache that captures outputs and shares them across machines and CI." />
+<meta name="description" content="yatr is a task runner with a content-addressed cache that captures outputs and shares them across machines and CI." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 56'%3E%3Cpath fill='%23D0704F' d='M32 8c-8 0-13 4-14 10-1 4-1 8 1 12 1 6 4 12 9 15 2 1 6 1 8 0 5-3 8-9 9-15 2-4 2-8 1-12-1-6-6-10-14-10z'/%3E%3Cpath fill='%23D0704F' d='M19 17C12 15 7 17 5 22c-1 2 0 4 2 4 0-3 3-6 8-5 2 0 4-1 4-4zM45 17c7-2 12 0 14 5 1 2 0 4-2 4 0-3-3-6-8-5-2 0-4-1-4-4z'/%3E%3C/svg%3E" />
 <link rel="preload" href="/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin />
@@ -339,7 +339,7 @@
       <div class="hero-copy">
         <span class="eyebrow"><span class="dot"></span>Single binary · zero runtime deps</span>
         <h1>Run your tasks.<br><em>Trust your cache.</em></h1>
-        <p class="lede">A fast, single-binary, polyglot task runner with a content-addressed cache that captures outputs and shares them across machines.</p>
+        <p class="lede">A warm rebuild in 0.43s, against 6.10s cold. yatr hashes what goes into each task, restores what it made, and shares the cache across machines.</p>
         <div class="cta-row">
           <button class="install" id="install" aria-label="Copy install command">
             <span><span class="prompt">$</span> cargo install yatr</span>
@@ -396,7 +396,7 @@
           <div>
             <span class="tag">Content addressed</span>
             <h3>Hashes inputs, not clocks</h3>
-            <p>The cache key is a BLAKE3 hash of sources, command, working directory, and declared outputs. Same inputs, guaranteed hit. No mtime guessing.</p>
+            <p>The cache key is a BLAKE3 hash of sources, command, working directory, and declared outputs. Same inputs, same key. No mtime guessing.</p>
           </div>
           <div class="flow">
             <span class="chip">sources</span><span class="arrow">+</span>
@@ -457,7 +457,7 @@
       <div class="reveal">
         <div class="kicker">Why the cache is different</div>
         <h2>A cache that <em>tells the truth.</em></h2>
-        <p class="section-lede" style="margin-bottom:22px">Make trusts timestamps. Most runners trust nothing, or cache by hope. yatr derives a key from what actually went into a task, stores the outputs by content, and signs the lot.</p>
+        <p class="section-lede" style="margin-bottom:22px"><code style="font-family:var(--mono);color:var(--accent)">make</code> trusts timestamps. Most runners trust nothing, or cache by hope. yatr derives a key from what actually went into a task, stores the outputs by content, and signs the lot.</p>
         <p class="section-lede">Move it between machines and the key still matches, because it hashes relative paths. So a warm rebuild is honest: it is the build CI already proved, restored, not re-run.</p>
         <div class="cta-row" style="margin-top:30px">
           <a class="ghost" href="https://cargopete.github.io/yatr/">How caching works <span class="arrow">&rsaquo;</span></a>
@@ -511,7 +511,7 @@
       <div class="section-head reveal">
         <div class="kicker">Where it sits</div>
         <h2>Simpler than cargo-make. <em>More than just.</em></h2>
-        <p class="section-lede">yatr lives in the sweet spot: the ergonomics of a small runner, the cache fundamentals of a build system, and none of the Bazel ceremony.</p>
+        <p class="section-lede">The config of a small runner and the cache of a build system. yatr does not sandbox: Bazel gives you hermetic builds, and yatr runs your commands in your own environment. The last three rows are where it loses.</p>
       </div>
       <div class="reveal">
         <table class="matrix">
