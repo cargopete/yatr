@@ -6,10 +6,14 @@
 <title>yatr · a task runner whose cache tells the truth</title>
 <meta name="description" content="yatr is a fast, single-binary, polyglot task runner with a content-addressed cache that captures outputs and shares them across machines and CI." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 56'%3E%3Cpath fill='%23D0704F' d='M32 8c-8 0-13 4-14 10-1 4-1 8 1 12 1 6 4 12 9 15 2 1 6 1 8 0 5-3 8-9 9-15 2-4 2-8 1-12-1-6-6-10-14-10z'/%3E%3Cpath fill='%23D0704F' d='M19 17C12 15 7 17 5 22c-1 2 0 4 2 4 0-3 3-6 8-5 2 0 4-1 4-4zM45 17c7-2 12 0 14 5 1 2 0 4-2 4 0-3-3-6-8-5-2 0-4-1-4-4z'/%3E%3C/svg%3E" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="preload" href="/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin />
 <style>
+  @font-face { font-family: "Fraunces"; src: url("/fonts/fraunces.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+  @font-face { font-family: "Fraunces"; src: url("/fonts/fraunces-italic.woff2") format("woff2"); font-weight: 500; font-style: italic; font-display: swap; }
+  @font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-style: normal; font-display: swap; }
+  @font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+
   :root {
     --bg:             #171614;
     --bg-elev:        #201f1c;
@@ -87,7 +91,7 @@
     border-bottom: 1px solid var(--border);
   }
   .nav { display: flex; align-items: center; gap: 28px; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
-  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; letter-spacing: -0.01em; font-size: 19px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 600; letter-spacing: -0.01em; font-size: 19px; }
   .brand svg { width: 30px; height: 28px; display: block; }
   .nav-links { display: flex; gap: 26px; margin-left: auto; font-size: 15px; color: var(--text-muted); }
   .nav-links a { transition: color .18s ease; }
@@ -99,7 +103,7 @@
     background: var(--accent);
     padding: 9px 15px;
     border-radius: 9px;
-    font-weight: 500;
+    font-weight: 400;
     transition: transform .18s ease, background .18s ease;
   }
   .nav-cta:hover { transform: translateY(-1px); }
@@ -194,7 +198,7 @@
     transition: border-color .22s ease, transform .22s ease;
   }
   .cell:hover { border-color: var(--border-hi); transform: translateY(-3px); }
-  .cell h3 { font-family: var(--sans); font-weight: 700; font-size: 1.16rem; letter-spacing: -0.01em; margin: 0 0 9px; }
+  .cell h3 { font-family: var(--sans); font-weight: 500; font-size: 1.16rem; letter-spacing: -0.01em; margin: 0 0 9px; }
   .cell p { color: var(--text-muted); margin: 0; font-size: 0.97rem; }
   .cell .ic { width: 30px; height: 30px; margin-bottom: 18px; color: var(--accent); }
   .cell .tag { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; display: inline-block; margin-bottom: 16px; padding: 4px 9px; border: 1px solid var(--border-hi); border-radius: 7px; }
@@ -222,7 +226,7 @@
   .matrix { width: 100%; border-collapse: separate; border-spacing: 0; }
   .matrix thead th { font-family: var(--sans); font-weight: 500; font-size: 0.95rem; color: var(--text-muted); text-align: center; padding: 0 0 18px; }
   .matrix thead th:first-child { text-align: left; }
-  .matrix thead th.us { color: var(--accent); font-weight: 700; }
+  .matrix thead th.us { color: var(--accent); font-weight: 500; }
   .matrix tbody td { padding: 16px 12px; text-align: center; font-size: 0.95rem; color: var(--text-muted); }
   .matrix tbody td:first-child { text-align: left; color: var(--text); font-weight: 500; }
   .matrix tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.012); }
