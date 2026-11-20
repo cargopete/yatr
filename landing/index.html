@@ -287,7 +287,10 @@
   @media (max-width: 920px) {
     .hero { min-height: auto; padding-top: 56px; padding-bottom: 120px; }
     .hero-grid { grid-template-columns: 1fr; gap: 44px; }
-    .nav-links { display: none; }
+    header { height: auto; padding: 14px 0 10px; }
+    .nav { flex-wrap: wrap; row-gap: 10px; }
+    .nav-cta { margin-left: auto; }
+    .nav-links { order: 3; width: 100%; margin-left: 0; flex-wrap: wrap; column-gap: 20px; row-gap: 4px; }
     .bento { grid-template-columns: repeat(2, 1fr); }
     .c-wide, .c-mid, .c-third, .c-feature { grid-column: span 2; }
     .c-feature { min-height: auto; }
